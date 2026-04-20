@@ -7,15 +7,14 @@ import json
 # ==========================================
 st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide", initial_sidebar_state="expanded")
 
-# 【重要】請在此填入你的 Gemini API Key
+# 【重要】請在此填入你剛剛申請到的 Gemini API Key (保留雙引號)
 API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
 genai.configure(api_key=API_KEY)
 
-# 【修改後的程式碼】
+# 【修正1】降階為 flash 模型，解決 404 NotFound 權限問題
 model = genai.GenerativeModel(
-    'gemini-1.5-flash', # <--- 換成 flash 就可以了！
+    'gemini-1.5-flash', 
     generation_config={"response_mime_type": "application/json"}
-)
 )
 
 # ==========================================
@@ -37,8 +36,8 @@ if "sai_score" not in st.session_state:
 # ==========================================
 def generate_sana_response(user_speech, user_action):
     """
-    這是 Sana 的靈魂。我們將你設計的數十個模組邏輯，壓縮成系統指令，
-    讓 LLM 扮演 VFO (Value-Free Override) 進行統籌裁決。
+    Sana 的靈魂。將你設計的數十個模組邏輯，壓縮成系統指令，
+    讓 LLM 扮演 VFO 進行統籌裁決。
     """
     system_prompt = f"""
     [最高指令] 
@@ -81,16 +80,18 @@ def generate_sana_response(user_speech, user_action):
     }}
     """
     
-    response = model.generate_content(system_prompt)
+    # 【修正2】防死當裝甲：將容易出錯的 API 呼叫包起來
     try:
+        response = model.generate_content(system_prompt)
         # 清理可能夾帶的 Markdown 標記
         raw_text = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(raw_text)
     except Exception as e:
+        # 如果 API 崩潰，會把錯誤原因印在畫面上，而不是直接讓網頁卡死
         return {
-            "vfo_log": f"系統錯誤解析失敗: {str(e)}", 
-            "sana_action": "(系統異常當機)", 
-            "sana_speech": "「大腦運算卡住了...」", 
+            "vfo_log": f"⚠️ 系統連線錯誤: {str(e)}", 
+            "sana_action": "(系統異常，原地當機)", 
+            "sana_speech": "「...我的大腦伺服器好像連線失敗了。」", 
             "new_am_state": st.session_state.am_state,
             "new_chm_score": st.session_state.chm_score,
             "bd_change": 0, "sai_change": 0
