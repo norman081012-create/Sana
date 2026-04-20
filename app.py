@@ -11,10 +11,11 @@ st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide",
 API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
 genai.configure(api_key=API_KEY)
 
-# 強制要求回傳 JSON 格式，讓 Python 能接手解析 Sana 的動作與狀態變動
+# 【修改後的程式碼】
 model = genai.GenerativeModel(
-    'gemini-1.5-pro', # 建議使用 pro 以處理極度複雜的邏輯推理
+    'gemini-1.5-flash', # <--- 換成 flash 就可以了！
     generation_config={"response_mime_type": "application/json"}
+)
 )
 
 # ==========================================
