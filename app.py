@@ -2,46 +2,34 @@ import streamlit as st
 import google.generativeai as genai
 import json
 
+st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide", initial_sidebar_state="expanded")
+
 # ==========================================
 # 1. 系統初始化與 API 設定
 # ==========================================
-st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide", initial_sidebar_state="expanded")
-
 # 【重要】請在此填入你的 Gemini API Key
 API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
 genai.configure(api_key=API_KEY)
 
-# --- 💡 新增：自動尋找可用的 1.5 模型 ---
-@st.cache_resource
-def get_best_available_model():
+# ==========================================
+# 2. 自動掃描可用模型 (大腦探測器)
+# ==========================================
+@st.cache_data(ttl=3600) # 快取掃描結果
+def get_available_models():
     try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        target_model = "gemini-1.5-flash" # 預設保底
-        
-        # 尋找任何包含 1.5 且支援 JSON 輸出的模型
-        for m in available_models:
-            if '1.5-flash' in m:
-                target_model = m.replace('models/', '')
-                break
-            elif '1.5-pro' in m:
-                target_model = m.replace('models/', '')
-                break
-        return target_model, True, ""
+        models = []
+        # 直接向 Google 查詢這把鑰匙能用哪些模型
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                models.append(m.name.replace('models/', ''))
+        return models, ""
     except Exception as e:
-        return "連線失敗", False, str(e)
+        return [], str(e)
 
-best_model_name, is_connected, error_msg = get_best_available_model()
-
-if is_connected:
-    model = genai.GenerativeModel(
-        best_model_name, 
-        generation_config={"response_mime_type": "application/json"}
-    )
-else:
-    model = None
+available_models, error_msg = get_available_models()
 
 # ==========================================
-# 2. 狀態機與記憶庫初始化 (Session State)
+# 3. 狀態機與記憶庫初始化 (Session State)
 # ==========================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -55,11 +43,14 @@ if "sai_score" not in st.session_state:
     st.session_state.sai_score = 50
 
 # ==========================================
-# 3. VFO 核心決策大腦
+# 4. VFO 核心決策大腦 (含動態模型選擇)
 # ==========================================
-def generate_sana_response(user_speech, user_action):
-    if not model:
-        return {"vfo_log": f"API連線失敗: {error_msg}", "sana_action": "(當機)", "sana_speech": "大腦未連線。"}
+def generate_sana_response(user_speech, user_action, selected_model_name):
+    # 依照使用者在介面上選取的模型來初始化
+    model = genai.GenerativeModel(
+        selected_model_name, 
+        generation_config={"response_mime_type": "application/json"}
+    )
         
     system_prompt = f"""
     [最高指令] 
@@ -108,8 +99,8 @@ def generate_sana_response(user_speech, user_action):
         return json.loads(raw_text)
     except Exception as e:
         return {
-            "vfo_log": f"⚠️ API連線崩潰: {str(e)}", 
-            "sana_action": "(系統異常，原地當機)", 
+            "vfo_log": f"⚠️ API執行崩潰: {str(e)}", 
+            "sana_action": "(系統異常)", 
             "sana_speech": "「...伺服器運算出錯了。」", 
             "new_am_state": st.session_state.am_state,
             "new_chm_score": st.session_state.chm_score,
@@ -117,24 +108,34 @@ def generate_sana_response(user_speech, user_action):
         }
 
 # ==========================================
-# 4. 前端視覺化面板 (Streamlit)
+# 5. 前端視覺化面板 (Streamlit)
 # ==========================================
 st.markdown("### 🧠 Project Sana : VFO 模組聯合測試台")
 st.markdown("---")
 
 col_chat, col_sys = st.columns([6, 4])
 
-# --- 右欄：VFO 後台監控儀表板 ---
+# --- 右欄：VFO 後台監控與大腦選擇 ---
 with col_sys:
-    st.markdown("#### ⚙️ 系統診斷與狀態機")
+    st.markdown("#### ⚙️ 系統診斷與大腦連線")
     
-    # 顯示連線狀態
-    if is_connected:
-        st.success(f"🟢 系統連線成功 | 驅動模型: {best_model_name}")
+    # 動態產生模型選單
+    if not available_models:
+        st.error(f"🔴 API 驗證失敗！無法獲取模型清單。錯誤原因：{error_msg}")
+        selected_model = None
     else:
-        st.error(f"🔴 系統連線失敗 | 錯誤: {error_msg}")
+        st.success(f"🟢 API 驗證成功！共找到 {len(available_models)} 個可用大腦。")
+        # 預設尋找 flash 或 pro，若無則選清單第一個
+        default_index = 0
+        for i, m in enumerate(available_models):
+            if "flash" in m:
+                default_index = i
+                break
         
-    # 核心數值區
+        selected_model = st.selectbox("請選擇驅動 Sana 的大腦型號：", available_models, index=default_index)
+
+    st.divider()    
+    st.markdown("#### 📊 狀態機即時監控")
     metrics_cols = st.columns(2)
     metrics_cols[0].metric("AM (氣氛狀態)", st.session_state.am_state)
     metrics_cols[1].metric("CHM (話題熱度)", st.session_state.chm_score)
@@ -142,9 +143,8 @@ with col_sys:
     metrics_cols[1].metric("SAI (社交優勢)", st.session_state.sai_score)
     
     st.divider()
-    
-    st.markdown("**📊 VFO 路由決策日誌**")
-    log_container = st.container(height=350)
+    st.markdown("**📝 VFO 路由決策日誌**")
+    log_container = st.container(height=300)
     with log_container:
         for msg in st.session_state.messages:
             if msg["role"] == "Sana":
@@ -152,7 +152,7 @@ with col_sys:
 
 # --- 左欄：語場互動區 ---
 with col_chat:
-    chat_container = st.container(height=500)
+    chat_container = st.container(height=550)
     with chat_container:
         for msg in st.session_state.messages:
             if msg["role"] == "User":
@@ -161,7 +161,6 @@ with col_chat:
                 st.markdown(f"🏋️‍♀️ **Sana:** *{msg['action']}* {msg['speech']}")
                 
     st.markdown("---")
-    
     with st.form("interaction_form", clear_on_submit=True):
         input_cols = st.columns([3, 7])
         with input_cols[0]:
@@ -172,24 +171,25 @@ with col_chat:
         submitted = st.form_submit_button("送出至 VFO")
         
         if submitted and user_speech:
-            st.session_state.messages.append({"role": "User", "action": user_action, "speech": user_speech})
-            
-            with st.spinner("VFO 協調模組中..."):
-                sana_reply = generate_sana_response(user_speech, user_action)
-            
-            st.session_state.am_state = sana_reply.get("new_am_state", st.session_state.am_state)
-            st.session_state.chm_score = sana_reply.get("new_chm_score", st.session_state.chm_score)
-            
-            new_bd = st.session_state.bd_score + sana_reply.get("bd_change", 0)
-            st.session_state.bd_score = max(0, min(100, new_bd))
-            
-            new_sai = st.session_state.sai_score + sana_reply.get("sai_change", 0)
-            st.session_state.sai_score = max(0, min(100, new_sai))
-            
-            st.session_state.messages.append({
-                "role": "Sana",
-                "action": sana_reply.get("sana_action", ""),
-                "speech": sana_reply.get("sana_speech", ""),
-                "vfo_log": sana_reply.get("vfo_log", "無紀錄")
-            })
-            st.rerun()
+            if not selected_model:
+                st.error("請先在右側確保 API 連線成功並選擇模型！")
+            else:
+                st.session_state.messages.append({"role": "User", "action": user_action, "speech": user_speech})
+                
+                with st.spinner(f"VFO 協調模組中 (使用 {selected_model})..."):
+                    sana_reply = generate_sana_response(user_speech, user_action, selected_model)
+                
+                st.session_state.am_state = sana_reply.get("new_am_state", st.session_state.am_state)
+                st.session_state.chm_score = sana_reply.get("new_chm_score", st.session_state.chm_score)
+                new_bd = st.session_state.bd_score + sana_reply.get("bd_change", 0)
+                st.session_state.bd_score = max(0, min(100, new_bd))
+                new_sai = st.session_state.sai_score + sana_reply.get("sai_change", 0)
+                st.session_state.sai_score = max(0, min(100, new_sai))
+                
+                st.session_state.messages.append({
+                    "role": "Sana",
+                    "action": sana_reply.get("sana_action", ""),
+                    "speech": sana_reply.get("sana_speech", ""),
+                    "vfo_log": sana_reply.get("vfo_log", "無紀錄")
+                })
+                st.rerun()
