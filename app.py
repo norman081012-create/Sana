@@ -8,7 +8,7 @@ import json
 st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide", initial_sidebar_state="expanded")
 
 # 【重要】請在此填入你的 Gemini API Key
-API_KEY = "請替換成你的_API_KEY"
+API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
 genai.configure(api_key=API_KEY)
 
 # 強制要求回傳 JSON 格式，讓 Python 能接手解析 Sana 的動作與狀態變動
