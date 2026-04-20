@@ -7,15 +7,38 @@ import json
 # ==========================================
 st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide", initial_sidebar_state="expanded")
 
-# 【重要】請在此填入你剛剛申請到的 Gemini API Key (保留雙引號)
+# 【重要】請在此填入你的 Gemini API Key
 API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
 genai.configure(api_key=API_KEY)
 
-# 【修正1】降階為 flash 模型，解決 404 NotFound 權限問題
-model = genai.GenerativeModel(
-    'gemini-1.5-flash', 
-    generation_config={"response_mime_type": "application/json"}
-)
+# --- 💡 新增：自動尋找可用的 1.5 模型 ---
+@st.cache_resource
+def get_best_available_model():
+    try:
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        target_model = "gemini-1.5-flash" # 預設保底
+        
+        # 尋找任何包含 1.5 且支援 JSON 輸出的模型
+        for m in available_models:
+            if '1.5-flash' in m:
+                target_model = m.replace('models/', '')
+                break
+            elif '1.5-pro' in m:
+                target_model = m.replace('models/', '')
+                break
+        return target_model, True, ""
+    except Exception as e:
+        return "連線失敗", False, str(e)
+
+best_model_name, is_connected, error_msg = get_best_available_model()
+
+if is_connected:
+    model = genai.GenerativeModel(
+        best_model_name, 
+        generation_config={"response_mime_type": "application/json"}
+    )
+else:
+    model = None
 
 # ==========================================
 # 2. 狀態機與記憶庫初始化 (Session State)
@@ -23,22 +46,21 @@ model = genai.GenerativeModel(
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "am_state" not in st.session_state:
-    st.session_state.am_state = "中立 (Neutral)" # 氣氛模組
+    st.session_state.am_state = "中立 (Neutral)"
 if "chm_score" not in st.session_state:
-    st.session_state.chm_score = "中溫 (Mid Heat)" # 場子熱度
+    st.session_state.chm_score = "中溫 (Mid Heat)"
 if "bd_score" not in st.session_state:
-    st.session_state.bd_score = 100 # 邊界安全值 (越低越危險)
+    st.session_state.bd_score = 100
 if "sai_score" not in st.session_state:
-    st.session_state.sai_score = 50 # 社交優勢 (Social Advantage)
+    st.session_state.sai_score = 50
 
 # ==========================================
-# 3. VFO 核心決策大腦 (巨型 Prompt 封裝)
+# 3. VFO 核心決策大腦
 # ==========================================
 def generate_sana_response(user_speech, user_action):
-    """
-    Sana 的靈魂。將你設計的數十個模組邏輯，壓縮成系統指令，
-    讓 LLM 扮演 VFO 進行統籌裁決。
-    """
+    if not model:
+        return {"vfo_log": f"API連線失敗: {error_msg}", "sana_action": "(當機)", "sana_speech": "大腦未連線。"}
+        
     system_prompt = f"""
     [最高指令] 
     你現在是健身教練 Sana，由 VFO (Value-Free Override) 模組統籌你的所有心理狀態與輸出。
@@ -75,23 +97,20 @@ def generate_sana_response(user_speech, user_action):
         "sana_speech": "「sana說出來的台詞，需符合 SHP 說人話模組，單一引號包住」",
         "new_am_state": "判斷回覆後的氣氛 (曖昧/熱絡/愉悅/中立/尷尬/緊張/謹慎)",
         "new_chm_score": "判斷回覆後的話題熱度 (高熱/中溫/低熱)",
-        "bd_change": 對邊界安全值的影響數值 (-20 到 +10),
-        "sai_change": 對社交優勢的影響數值 (-10 到 +10)
+        "bd_change": 對邊界安全值的影響 (-20 到 +10 的整數),
+        "sai_change": 對社交優勢的影響 (-10 到 +10 的整數)
     }}
     """
     
-    # 【修正2】防死當裝甲：將容易出錯的 API 呼叫包起來
     try:
         response = model.generate_content(system_prompt)
-        # 清理可能夾帶的 Markdown 標記
         raw_text = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(raw_text)
     except Exception as e:
-        # 如果 API 崩潰，會把錯誤原因印在畫面上，而不是直接讓網頁卡死
         return {
-            "vfo_log": f"⚠️ 系統連線錯誤: {str(e)}", 
+            "vfo_log": f"⚠️ API連線崩潰: {str(e)}", 
             "sana_action": "(系統異常，原地當機)", 
-            "sana_speech": "「...我的大腦伺服器好像連線失敗了。」", 
+            "sana_speech": "「...伺服器運算出錯了。」", 
             "new_am_state": st.session_state.am_state,
             "new_chm_score": st.session_state.chm_score,
             "bd_change": 0, "sai_change": 0
@@ -100,17 +119,21 @@ def generate_sana_response(user_speech, user_action):
 # ==========================================
 # 4. 前端視覺化面板 (Streamlit)
 # ==========================================
-# 頂部標題
 st.markdown("### 🧠 Project Sana : VFO 模組聯合測試台")
-st.caption("核心架構：Value-Free Override (VFO) | 搭載模組：OMM, CNM, SCM, AM, CHM, STM, BRM, SPM... 等40項協議")
 st.markdown("---")
 
 col_chat, col_sys = st.columns([6, 4])
 
 # --- 右欄：VFO 後台監控儀表板 ---
 with col_sys:
-    st.markdown("#### ⚙️ 模組狀態機即時監控")
+    st.markdown("#### ⚙️ 系統診斷與狀態機")
     
+    # 顯示連線狀態
+    if is_connected:
+        st.success(f"🟢 系統連線成功 | 驅動模型: {best_model_name}")
+    else:
+        st.error(f"🔴 系統連線失敗 | 錯誤: {error_msg}")
+        
     # 核心數值區
     metrics_cols = st.columns(2)
     metrics_cols[0].metric("AM (氣氛狀態)", st.session_state.am_state)
@@ -120,8 +143,7 @@ with col_sys:
     
     st.divider()
     
-    # VFO 決策日誌
-    st.markdown("**📊 VFO 路由決策日誌 (JSM 隱身模組破除)**")
+    st.markdown("**📊 VFO 路由決策日誌**")
     log_container = st.container(height=350)
     with log_container:
         for msg in st.session_state.messages:
@@ -130,7 +152,6 @@ with col_sys:
 
 # --- 左欄：語場互動區 ---
 with col_chat:
-    # 對話歷史紀錄
     chat_container = st.container(height=500)
     with chat_container:
         for msg in st.session_state.messages:
@@ -141,43 +162,34 @@ with col_chat:
                 
     st.markdown("---")
     
-    # 雙軌輸入表單
     with st.form("interaction_form", clear_on_submit=True):
         input_cols = st.columns([3, 7])
         with input_cols[0]:
-            user_action = st.text_input("動作/姿態 (選填)", placeholder="(例如：靠很近、面無表情)")
+            user_action = st.text_input("動作/姿態 (選填)", placeholder="(例如：靠很近)")
         with input_cols[1]:
             user_speech = st.text_input("對話輸入", placeholder="輸入你想說的話...")
             
         submitted = st.form_submit_button("送出至 VFO")
         
         if submitted and user_speech:
-            # 1. 紀錄玩家輸入
-            st.session_state.messages.append({
-                "role": "User", "action": user_action, "speech": user_speech
-            })
+            st.session_state.messages.append({"role": "User", "action": user_action, "speech": user_speech})
             
-            # 2. 呼叫大腦運算
-            with st.spinner("VFO 協調模組中... (OMM / AM / SCM)"):
+            with st.spinner("VFO 協調模組中..."):
                 sana_reply = generate_sana_response(user_speech, user_action)
             
-            # 3. 更新所有背景數值
             st.session_state.am_state = sana_reply.get("new_am_state", st.session_state.am_state)
             st.session_state.chm_score = sana_reply.get("new_chm_score", st.session_state.chm_score)
             
             new_bd = st.session_state.bd_score + sana_reply.get("bd_change", 0)
-            st.session_state.bd_score = max(0, min(100, new_bd)) # 限制在 0-100
+            st.session_state.bd_score = max(0, min(100, new_bd))
             
             new_sai = st.session_state.sai_score + sana_reply.get("sai_change", 0)
             st.session_state.sai_score = max(0, min(100, new_sai))
             
-            # 4. 紀錄 Sana 輸出與決策日誌
             st.session_state.messages.append({
                 "role": "Sana",
                 "action": sana_reply.get("sana_action", ""),
                 "speech": sana_reply.get("sana_speech", ""),
                 "vfo_log": sana_reply.get("vfo_log", "無紀錄")
             })
-            
-            # 重新整理畫面
             st.rerun()
