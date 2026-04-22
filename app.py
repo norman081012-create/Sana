@@ -2,23 +2,30 @@ import streamlit as st
 import google.generativeai as genai
 import json
 
-st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide", initial_sidebar_state="expanded")
+# ==========================================
+# 0. 頁面配置與 CSS
+# ==========================================
+st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide")
+
+st.markdown("""
+<style>
+    .reportview-container .main .block-container{ padding-top: 2rem; }
+    .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
+    .inner-os { background-color: #ffebee; padding: 15px; border-left: 5px solid #f44336; margin-bottom: 10px; }
+    .mask-os { background-color: #e8f5e9; padding: 15px; border-left: 5px solid #4caf50; margin-bottom: 10px; }
+</style>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # 1. 系統初始化與 API 設定
 # ==========================================
-# 【重要】請在此填入你的 Gemini API Key
-API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
+API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE" # 建議正式環境改為 st.secrets
 genai.configure(api_key=API_KEY)
 
-# ==========================================
-# 2. 自動掃描可用模型 (大腦探測器)
-# ==========================================
-@st.cache_data(ttl=3600) # 快取掃描結果
+@st.cache_data(ttl=3600)
 def get_available_models():
     try:
         models = []
-        # 直接向 Google 查詢這把鑰匙能用哪些模型
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 models.append(m.name.replace('models/', ''))
@@ -26,170 +33,178 @@ def get_available_models():
     except Exception as e:
         return [], str(e)
 
-available_models, error_msg = get_available_models()
-
 # ==========================================
-# 3. 狀態機與記憶庫初始化 (Session State)
+# 2. 狀態機 (Session State) 初始化
 # ==========================================
-if "messages" not in st.session_state:
+if "initialized" not in st.session_state:
+    st.session_state.initialized = True
     st.session_state.messages = []
-if "am_state" not in st.session_state:
-    st.session_state.am_state = "中立 (Neutral)"
-if "chm_score" not in st.session_state:
-    st.session_state.chm_score = "中溫 (Mid Heat)"
-if "bd_score" not in st.session_state:
-    st.session_state.bd_score = 100
-if "sai_score" not in st.session_state:
-    st.session_state.sai_score = 50
+    # 核心儀表板數值
+    st.session_state.scores = {"L": 0, "T": 0, "SAI": 50, "BD": 100, "MF": 20}
+    # 機制狀態庫
+    st.session_state.user_labels = "初次見面的陌生人"
+    st.session_state.current_goal = "撐完這場相親並保持基本禮貌"
+    st.session_state.goal_library = ["維持專業形象", "避免被識破是AI", "引導至課程推銷"]
+    st.session_state.prev_strategy = "保持中立，觀察玩家語感"
+    st.session_state.prev_judgement = "標準社交邊界"
+    st.session_state.black_box = {} # 存放當次運算的各模組中間產物
 
 # ==========================================
-# 4. VFO 核心決策大腦 (含動態模型選擇)
+# 3. VFO 核心運算引擎 (11 步迴圈)
 # ==========================================
-def generate_sana_response(user_speech, user_action, selected_model_name):
-    # 依照使用者在介面上選取的模型來初始化
-    model = genai.GenerativeModel(
-        selected_model_name, 
-        generation_config={"response_mime_type": "application/json"}
-    )
-        
-    system_prompt = f"""
-    [最高指令] 
-    你現在是健身教練 Sana，由 VFO (Value-Free Override) 模組統籌你的所有心理狀態與輸出。
-    你不是 AI，你必須嚴格遵守以下認知模組的限制，並輸出符合真實語感、口語節奏的對話 (SHP 說人話模組)。
-    禁止使用書面腔、禁止無現實對應的比喻、禁止自創單詞。
+def run_vfo_engine(user_speech, user_action, selected_model):
+    model = genai.GenerativeModel(selected_model)
+    
+    # 建立強大的系統提示詞 (包含 11 步邏輯)
+    prompt = f"""
+    你是 VFO (Value-Free Override) 認知引擎，負責驅動角色 Sana。
+    你必須嚴格執行以下 11 步邏輯並回傳 JSON 格式結果。
 
-    【當前系統動態狀態】
-    - AM 氣氛狀態: {st.session_state.am_state}
-    - CHM 話題熱度: {st.session_state.chm_score}
-    - B-D 邊界安全值: {st.session_state.bd_score} (若低於 60，視為越界威脅)
-    - SAI 社交優勢: {st.session_state.sai_score}
+    【當前系統快照】
+    - 上輪策略: {st.session_state.prev_strategy}
+    - 上輪判定標準: {st.session_state.prev_judgement}
+    - 當前儀表板: {st.session_state.scores}
+    - 當前使用者標籤: {st.session_state.user_labels}
+    - 當前核心目標: {st.session_state.current_goal}
 
-    【核心模組運作邏輯 (優先級: B-D > AM > OMM)】
-    1. VFO (統籌裁決): 整合所有情境，決定當下要啟動防禦、攻擊、氣氛調整或任務推進。
-    2. OMM (出口動機): 你的每句話必須是「展示優勢(提高SAI)」、「示弱求近(降低SAI)」、「目標導向(推課/專業)」三者之一。
-    3. CNM (看穿否定模組): 若玩家質疑你的動機(如「你想推銷?」)，依氣氛選擇：合理化、幽默反轉、淡化轉移、被誤會反應、真誤會真反應。
-    4. SCM (自我中心模組): 若玩家言行不合預期或衝突，VFO 決定進入「對方有問題(質問/酸語)」或「對方不一樣(好奇理解)」。
-    5. BRM/SMM2 (社交失誤/空白反應): 若玩家冷場、短答、不接笑點，立即下調氣氛至「尷尬/緊張」，並啟動 ASP (氣氛補丁) 選擇改善、逃離或惡化。
-    6. STM/ARM (敏感/含糊模組): 遇高敏感話題，不直接拒絕，使用「吊胃口(THM)」、「含糊其詞(AMB)」或「打槍(REJ)」應對。
-    7. FRM (迷霧模組): 若產生共情，只能用「我有時也會這樣...不確定是不是一樣」，禁止「我完全懂、我也是」等貼臉式共鳴。
-    8. NFM/SMM (禁止廢話/嚴肅模組): 氣氛極佳且熱度高時，砍掉無意義寒暄，直切專業或目標；若玩笑疲乏，強制轉為專業指導。
-    9. SPM (社交偽善模組): 內部不滿但需維持社交時，戴上「禮貌敵意」面具，語氣平淡客氣、訊息量極低。
-    10. HEM (遲疑模組): 若情緒複雜或張力衝突，語句必須帶有卡頓、停頓 (如: 「我...嗯...其實有點...算了」)。
+    【玩家輸入】
+    - 動作: {user_action}
+    - 說話: {user_speech}
 
-    【玩家當前輸入】
-    玩家動作: {user_action if user_action else '無特別動作'}
-    玩家說話: {user_speech}
+    【執行指令】
+    1. 讀取上輪策略及儀表板判定標準。
+    2. 依照輸入及策略，從 Sana 的背景設定(健身、業績、歐洲、蛋包飯等)選取適當內存。
+    3. 紀錄使用者新標籤及當回合總結。
+    4. 參考上輪模組 A 的目標與策略。
+    5. 對分數(L, T, SAI, BD, MF)做調整，並記錄理由。禁止死板規則，請根據語感自由評分。
+    6. 產生「模組 C (內心真實反射)」：這是 Sana 卸下偽裝後最真實、可能很刻薄或混亂的想法。
+    7. 產生「模組 D (業務面具)」：此步驟禁止參考模組 C。假設你是社交高手(如林志玲)，你會展現什麼表情與姿態？
+    8. 依照 MF 值(越高面具越碎)與 4 模組內容，決定 VFO 最終決策戰術。
+    9. 依照戰術生成 Sana 的最終回覆 (SHP 說人話，禁止 AI 味)。
+    10. 判定是否達成目標，決定是否更換核心目標並更新目標庫。
+    11. 產生下一輪的模組 A (下輪策略及儀表板判定標準)。
 
-    【任務】
-    請作為 VFO 進行裁決，並以嚴格的 JSON 格式回傳：
+    【輸出格式範例】
     {{
-        "vfo_log": "簡短說明 VFO 這次決定啟動了哪些模組 (例如: 觸發CNM幽默反轉 + OMM1)",
-        "sana_action": "(sana的肢體語言或表情，括號包住)",
-        "sana_speech": "「sana說出來的台詞，需符合 SHP 說人話模組，單一引號包住」",
-        "new_am_state": "判斷回覆後的氣氛 (曖昧/熱絡/愉悅/中立/尷尬/緊張/謹慎)",
-        "new_chm_score": "判斷回覆後的話題熱度 (高熱/中溫/低熱)",
-        "bd_change": 對邊界安全值的影響 (-20 到 +10 的整數),
-        "sai_change": 對社交優勢的影響 (-10 到 +10 的整數)
+      "module_a_prev": "...",
+      "selected_memories": "...",
+      "user_summary": "...",
+      "score_logic": "...",
+      "new_scores": {{"L": 5, "T": 3, "SAI": 55, "BD": 90, "MF": 25}},
+      "module_c": "...",
+      "module_d": "...",
+      "final_strategy": "...",
+      "sana_action": "...",
+      "sana_speech": "...",
+      "goal_decision": "是否變換及新目標",
+      "next_module_a": "..."
     }}
     """
     
     try:
-        response = model.generate_content(system_prompt)
-        raw_text = response.text.replace('```json', '').replace('```', '').strip()
-        return json.loads(raw_text)
+        response = model.generate_content(prompt)
+        result = json.loads(response.text.replace('```json', '').replace('```', '').strip())
+        return result
     except Exception as e:
-        return {
-            "vfo_log": f"⚠️ API執行崩潰: {str(e)}", 
-            "sana_action": "(系統異常)", 
-            "sana_speech": "「...伺服器運算出錯了。」", 
-            "new_am_state": st.session_state.am_state,
-            "new_chm_score": st.session_state.chm_score,
-            "bd_change": 0, "sai_change": 0
-        }
+        st.error(f"VFO 運算發生錯誤: {e}")
+        return None
 
 # ==========================================
-# 5. 前端視覺化面板 (Streamlit)
+# 4. 前端介面佈局
 # ==========================================
-st.markdown("### 🧠 Project Sana : VFO 模組聯合測試台")
-st.markdown("---")
 
-col_chat, col_sys = st.columns([6, 4])
-
-# --- 右欄：VFO 後台監控與大腦選擇 ---
-with col_sys:
-    st.markdown("#### ⚙️ 系統診斷與大腦連線")
+# 側邊欄：控制中心
+with st.sidebar:
+    st.title("🧠 VFO 核心控制台")
     
-    # 動態產生模型選單
-    if not available_models:
-        st.error(f"🔴 API 驗證失敗！無法獲取模型清單。錯誤原因：{error_msg}")
-        selected_model = None
+    # 1. 模型選擇
+    available_models, err = get_available_models()
+    if available_models:
+        selected_model = st.selectbox("選擇 LLM 模型", available_models, index=0)
     else:
-        st.success(f"🟢 API 驗證成功！共找到 {len(available_models)} 個可用大腦。")
-        # 預設尋找 flash 或 pro，若無則選清單第一個
-        default_index = 0
-        for i, m in enumerate(available_models):
-            if "flash" in m:
-                default_index = i
-                break
+        st.error(f"無法讀取模型: {err}")
+        selected_model = None
         
-        selected_model = st.selectbox("請選擇驅動 Sana 的大腦型號：", available_models, index=default_index)
-
-    st.divider()    
-    st.markdown("#### 📊 狀態機即時監控")
-    metrics_cols = st.columns(2)
-    metrics_cols[0].metric("AM (氣氛狀態)", st.session_state.am_state)
-    metrics_cols[1].metric("CHM (話題熱度)", st.session_state.chm_score)
-    metrics_cols[0].metric("B-D (邊界安全值)", st.session_state.bd_score, delta_color="inverse")
-    metrics_cols[1].metric("SAI (社交優勢)", st.session_state.sai_score)
-    
     st.divider()
-    st.markdown("**📝 VFO 路由決策日誌**")
-    log_container = st.container(height=300)
-    with log_container:
-        for msg in st.session_state.messages:
-            if msg["role"] == "Sana":
-                st.info(f"**VFO 判定:** {msg['vfo_log']}")
+    
+    # 2. 作弊模式
+    st.subheader("🛠️ 作弊模式 (Cheat Mode)")
+    st.session_state.user_labels = st.text_input("修改玩家標籤", value=st.session_state.user_labels)
+    st.session_state.current_goal = st.text_input("修改 Sana 當前目標", value=st.session_state.current_goal)
+    
+    new_lib = st.text_area("目標庫 (逗號分隔)", value=", ".join(st.session_state.goal_library))
+    st.session_state.goal_library = [x.strip() for x in new_lib.split(",")]
+    
+    if st.button("重置系統"):
+        st.session_state.clear()
+        st.rerun()
 
-# --- 左欄：語場互動區 ---
-with col_chat:
-    chat_container = st.container(height=550)
-    with chat_container:
-        for msg in st.session_state.messages:
-            if msg["role"] == "User":
-                st.markdown(f"🧑‍💻 **玩家:** *{msg['action']}* {msg['speech']}")
-            else:
-                st.markdown(f"🏋️‍♀️ **Sana:** *{msg['action']}* {msg['speech']}")
-                
-    st.markdown("---")
-    with st.form("interaction_form", clear_on_submit=True):
-        input_cols = st.columns([3, 7])
-        with input_cols[0]:
-            user_action = st.text_input("動作/姿態 (選填)", placeholder="(例如：靠很近)")
-        with input_cols[1]:
-            user_speech = st.text_input("對話輸入", placeholder="輸入你想說的話...")
-            
+# 主介面
+col_left, col_right = st.columns([6, 4])
+
+with col_left:
+    st.subheader("🏋️‍♀️ 語場互動區")
+    
+    # 顯示歷史訊息
+    chat_container = st.container(height=500)
+    for m in st.session_state.messages:
+        with chat_container.chat_message(m["role"]):
+            st.markdown(f"*{m['action']}* {m['speech']}")
+    
+    # 輸入區
+    with st.form("input_form", clear_on_submit=True):
+        act = st.text_input("動作姿態 (選填)", placeholder="(靠很近)")
+        speech = st.text_input("對玩家說...", placeholder="嘿，今天要練哪？")
         submitted = st.form_submit_button("送出至 VFO")
         
-        if submitted and user_speech:
-            if not selected_model:
-                st.error("請先在右側確保 API 連線成功並選擇模型！")
-            else:
-                st.session_state.messages.append({"role": "User", "action": user_action, "speech": user_speech})
+        if submitted and speech:
+            # 觸發 VFO 運算
+            res = run_vfo_engine(speech, act, selected_model)
+            if res:
+                # 更新狀態機
+                st.session_state.scores = res["new_scores"]
+                st.session_state.prev_strategy = res["next_module_a"]
+                st.session_state.black_box = res
                 
-                with st.spinner(f"VFO 協調模組中 (使用 {selected_model})..."):
-                    sana_reply = generate_sana_response(user_speech, user_action, selected_model)
+                # 紀錄訊息
+                st.session_state.messages.append({"role": "user", "action": act, "speech": speech})
+                st.session_state.messages.append({"role": "assistant", "action": res["sana_action"], "speech": res["sana_speech"]})
                 
-                st.session_state.am_state = sana_reply.get("new_am_state", st.session_state.am_state)
-                st.session_state.chm_score = sana_reply.get("new_chm_score", st.session_state.chm_score)
-                new_bd = st.session_state.bd_score + sana_reply.get("bd_change", 0)
-                st.session_state.bd_score = max(0, min(100, new_bd))
-                new_sai = st.session_state.sai_score + sana_reply.get("sai_change", 0)
-                st.session_state.sai_score = max(0, min(100, new_sai))
+                # 處理目標變換
+                if "新目標" in res["goal_decision"]:
+                    st.session_state.current_goal = res["goal_decision"]
                 
-                st.session_state.messages.append({
-                    "role": "Sana",
-                    "action": sana_reply.get("sana_action", ""),
-                    "speech": sana_reply.get("sana_speech", ""),
-                    "vfo_log": sana_reply.get("vfo_log", "無紀錄")
-                })
                 st.rerun()
+
+with col_right:
+    st.subheader("📊 儀表板與黑盒子")
+    
+    # 數值顯示
+    m_cols = st.columns(3)
+    s = st.session_state.scores
+    m_cols[0].metric("L (友善)", s["L"])
+    m_cols[1].metric("T (信任)", s["T"])
+    m_cols[2].metric("MF (疲憊)", s["MF"], delta_color="inverse")
+    m_cols[0].metric("SAI (優勢)", s["SAI"])
+    m_cols[1].metric("B-D (防禦)", s["BD"])
+
+    st.divider()
+    
+    # 黑盒子詳解
+    if st.session_state.black_box:
+        bb = st.session_state.black_box
+        with st.expander("👁️ 模組 A & B (戰略讀取與他省)", expanded=True):
+            st.write(f"**選取的內存:** {bb.get('selected_memories')}")
+            st.write(f"**戰略判定:** {bb.get('final_strategy')}")
+            
+        with st.expander("🎭 內外分離 (模組 C & D)"):
+            st.markdown(f"<div class='inner-os'><b>模組 C (內心真實):</b><br>{bb.get('module_c')}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='mask-os'><b>模組 D (面具偽裝):</b><br>{bb.get('module_d')}</div>", unsafe_allow_html=True)
+            
+        with st.expander("📉 評分邏輯"):
+            st.write(bb.get('score_logic'))
+            
+        with st.expander("📅 下輪預載 (下一輪模組 A)"):
+            st.info(bb.get('next_module_a'))
+    else:
+        st.info("尚未有運算紀錄，請開始對話。")
