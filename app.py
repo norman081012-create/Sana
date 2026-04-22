@@ -1,210 +1,189 @@
 import streamlit as st
 import google.generativeai as genai
 import json
+import time
 
 # ==========================================
-# 0. 頁面配置與 CSS
+# 1. 系統初始化與配置
 # ==========================================
-st.set_page_config(page_title="Project Sana VFO 核心控制台", layout="wide")
+st.set_page_config(page_title="Project Sana VFO v7.3 核心控制台", layout="wide")
 
+# CSS 樣式優化
 st.markdown("""
 <style>
-    .reportview-container .main .block-container{ padding-top: 2rem; }
-    .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
-    .inner-os { background-color: #ffebee; padding: 15px; border-left: 5px solid #f44336; margin-bottom: 10px; }
-    .mask-os { background-color: #e8f5e9; padding: 15px; border-left: 5px solid #4caf50; margin-bottom: 10px; }
+    .node-box { background-color: #262730; border: 1px solid #464b5d; padding: 15px; border-radius: 5px; margin-bottom: 10px; }
+    .inner-os { color: #ff4b4b; font-style: italic; border-left: 3px solid #ff4b4b; padding-left: 10px; }
+    .mask-os { color: #00ffcc; border-left: 3px solid #00ffcc; padding-left: 10px; }
+    .stMetric { background-color: #1e1e1e; padding: 15px; border-radius: 10px; border: 1px solid #333; }
 </style>
 """, unsafe_allow_html=True)
 
-# ==========================================
-# 1. 系統初始化與 API 設定
-# ==========================================
-API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE" # 建議正式環境改為 st.secrets
+API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
 genai.configure(api_key=API_KEY)
 
-@st.cache_data(ttl=3600)
-def get_available_models():
-    try:
-        models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                models.append(m.name.replace('models/', ''))
-        return models, ""
-    except Exception as e:
-        return [], str(e)
-
 # ==========================================
-# 2. 狀態機 (Session State) 初始化
+# 2. 狀態機 (Session State)
 # ==========================================
 if "initialized" not in st.session_state:
     st.session_state.initialized = True
     st.session_state.messages = []
-    # 核心儀表板數值
+    # 核心儀表板 (L, T, SAI, BD, MF)
     st.session_state.scores = {"L": 0, "T": 0, "SAI": 50, "BD": 100, "MF": 20}
-    # 機制狀態庫
-    st.session_state.user_labels = "初次見面的陌生人"
+    # 歷史策略與目標
+    st.session_state.prev_module_a = "保持中立，觀察玩家語感，維持基礎社交距離。"
     st.session_state.current_goal = "撐完這場相親並保持基本禮貌"
-    st.session_state.goal_library = ["維持專業形象", "避免被識破是AI", "引導至課程推銷"]
-    st.session_state.prev_strategy = "保持中立，觀察玩家語感"
-    st.session_state.prev_judgement = "標準社交邊界"
-    st.session_state.black_box = {} # 存放當次運算的各模組中間產物
+    st.session_state.goal_library = ["維持專業形象", "避免被識破是AI", "引導至課程推銷", "尋求靈魂共鳴"]
+    st.session_state.user_labels = "初次見面的陌生人"
+    st.session_state.last_sana_output = "（尚未開始對話）"
+    # 中間產物存儲 (用於 Debug 與 UI 顯示)
+    st.session_state.nodes_output = {}
 
 # ==========================================
-# 3. VFO 核心運算引擎 (11 步迴圈)
+# 3. LLM 節點調用工具
 # ==========================================
-def run_vfo_engine(user_speech, user_action, selected_model):
-    model = genai.GenerativeModel(selected_model)
-    
-    # 建立強大的系統提示詞 (包含 11 步邏輯)
-    prompt = f"""
-    你是 VFO (Value-Free Override) 認知引擎，負責驅動角色 Sana。
-    你必須嚴格執行以下 11 步邏輯並回傳 JSON 格式結果。
-
-    【當前系統快照】
-    - 上輪策略: {st.session_state.prev_strategy}
-    - 上輪判定標準: {st.session_state.prev_judgement}
-    - 當前儀表板: {st.session_state.scores}
-    - 當前使用者標籤: {st.session_state.user_labels}
-    - 當前核心目標: {st.session_state.current_goal}
-
-    【玩家輸入】
-    - 動作: {user_action}
-    - 說話: {user_speech}
-
-    【執行指令】
-    1. 讀取上輪策略及儀表板判定標準。
-    2. 依照輸入及策略，從 Sana 的背景設定(健身、業績、歐洲、蛋包飯等)選取適當內存。
-    3. 紀錄使用者新標籤及當回合總結。
-    4. 參考上輪模組 A 的目標與策略。
-    5. 對分數(L, T, SAI, BD, MF)做調整，並記錄理由。禁止死板規則，請根據語感自由評分。
-    6. 產生「模組 C (內心真實反射)」：這是 Sana 卸下偽裝後最真實、可能很刻薄或混亂的想法。
-    7. 產生「模組 D (業務面具)」：此步驟禁止參考模組 C。假設你是社交高手(如林志玲)，你會展現什麼表情與姿態？
-    8. 依照 MF 值(越高面具越碎)與 4 模組內容，決定 VFO 最終決策戰術。
-    9. 依照戰術生成 Sana 的最終回覆 (SHP 說人話，禁止 AI 味)。
-    10. 判定是否達成目標，決定是否更換核心目標並更新目標庫。
-    11. 產生下一輪的模組 A (下輪策略及儀表板判定標準)。
-
-    【輸出格式範例】
-    {{
-      "module_a_prev": "...",
-      "selected_memories": "...",
-      "user_summary": "...",
-      "score_logic": "...",
-      "new_scores": {{"L": 5, "T": 3, "SAI": 55, "BD": 90, "MF": 25}},
-      "module_c": "...",
-      "module_d": "...",
-      "final_strategy": "...",
-      "sana_action": "...",
-      "sana_speech": "...",
-      "goal_decision": "是否變換及新目標",
-      "next_module_a": "..."
-    }}
-    """
-    
+def call_vfo_node(prompt, model_name, json_mode=True):
+    model = genai.GenerativeModel(model_name)
+    config = {"response_mime_type": "application/json"} if json_mode else None
     try:
-        response = model.generate_content(prompt)
-        result = json.loads(response.text.replace('```json', '').replace('```', '').strip())
-        return result
+        response = model.generate_content(prompt, generation_config=config)
+        if json_mode:
+            return json.loads(response.text.replace('```json', '').replace('```', '').strip())
+        return response.text.strip()
     except Exception as e:
-        st.error(f"VFO 運算發生錯誤: {e}")
-        return None
+        return f"ERROR: {str(e)}"
 
 # ==========================================
-# 4. 前端介面佈局
+# 4. 多節點 Pipeline 邏輯
 # ==========================================
-
-# 側邊欄：控制中心
-with st.sidebar:
-    st.title("🧠 VFO 核心控制台")
+def run_vfo_pipeline(user_speech, user_action, model_name):
+    nodes = {}
     
-    # 1. 模型選擇
-    available_models, err = get_available_models()
-    if available_models:
-        selected_model = st.selectbox("選擇 LLM 模型", available_models, index=0)
-    else:
-        st.error(f"無法讀取模型: {err}")
-        selected_model = None
+    with st.status("🧠 VFO 認知神經元運算中...", expanded=True) as status:
+        # Step 1: 讀取策略與內存提取
+        st.write("Node 1: 內存庫存呼叫...")
+        p1 = f"基於上輪策略：{st.session_state.prev_module_a} 與輸入：{user_speech}，從 Sana 背景模組中提取 3 個最相關的內存設定(L1-L6)。"
+        nodes['memories'] = call_vfo_node(p1, model_name, False)
         
+        # Step 2: 使用者標籤與總結
+        st.write("Node 2: 標籤判定與當前總結...")
+        p2 = f"內存：{nodes['memories']}，玩家輸入：{user_speech}。更新玩家標籤並總結互動關鍵。"
+        nodes['user_context'] = call_vfo_node(p2, model_name)
+        
+        # Step 3: 動態評分調整 (自由評分)
+        st.write("Node 3: 儀表板數值結算...")
+        p3 = f"當前分數：{st.session_state.scores}。參考上輪模組 A：{st.session_state.prev_module_a} 與上輪 Sana 表現：{st.session_state.last_sana_output}。對新分數進行調整並說明理由。"
+        nodes['scores_new'] = call_vfo_node(p3, model_name)
+        
+        # Step 4: 模組 C (內心真實)
+        st.write("Node 4: 模組 C 內心反射生成...")
+        p4 = f"基於新分數：{nodes['scores_new']} 與上下文。寫出 Sana 此刻最真實、未經過濾的內心 OS。"
+        nodes['module_c'] = call_vfo_node(p4, model_name, False)
+        
+        # Step 5: 模組 D (營業面具) - 物理隔離關鍵！
+        st.write("Node 5: 物理隔離啟動，鑄造模組 D 面具...")
+        # 注意：此處完全不餵入 nodes['module_c']
+        p5 = f"你是社交高手(如林志玲)。基於新分數：{nodes['scores_new']} 與標籤：{nodes['user_context']}。忽略內心真實想法，設計一套完美的外在反應與肢體語言。"
+        nodes['module_d'] = call_vfo_node(p5, model_name, False)
+        
+        # Step 6 & 7: 最終決策與回覆
+        st.write("Node 6-7: VFO 決策與語感轉化...")
+        p6 = f"當前 MF：{nodes['scores_new'].get('MF', 20)}。結合模組 C：{nodes['module_c']} 與模組 D：{nodes['module_d']}，決定最終回覆策略。確保符合 SHP 說人話模組（極簡、帶碎屑）。"
+        nodes['final_output'] = call_vfo_node(p6, model_name)
+        
+        # Step 8: 目標判定與庫存管理
+        st.write("Node 8: 核心目標結算...")
+        p8 = f"總結：{nodes['user_context']}。判斷當前目標 '{st.session_state.current_goal}' 是否需更換。目標庫：{st.session_state.goal_library}"
+        nodes['goal_update'] = call_vfo_node(p8, model_name)
+        
+        # Step 9: 次輪預載 (Module A)
+        st.write("Node 9: 下一輪策略預分析...")
+        p9 = f"基於最新目標：{nodes['goal_update']} 與分數：{nodes['scores_new']}，制定下一輪的模組 A 戰略大方向。"
+        nodes['next_a'] = call_vfo_node(p9, model_name, False)
+        
+        status.update(label="✅ VFO 運算完畢", state="complete", expanded=False)
+    
+    return nodes
+
+# ==========================================
+# 5. UI 介面實作
+# ==========================================
+
+# 側邊欄：模型與作弊器
+with st.sidebar:
+    st.title("⚙️ 核心後台")
+    models = ["gemini-1.5-pro", "gemini-1.5-flash"]
+    selected_model = st.selectbox("驅動模型", models)
+    
     st.divider()
+    st.subheader("🛠️ 作弊模式")
+    st.session_state.user_labels = st.text_input("修改對象標籤", st.session_state.user_labels)
+    st.session_state.current_goal = st.text_input("覆寫目前目標", st.session_state.current_goal)
     
-    # 2. 作弊模式
-    st.subheader("🛠️ 作弊模式 (Cheat Mode)")
-    st.session_state.user_labels = st.text_input("修改玩家標籤", value=st.session_state.user_labels)
-    st.session_state.current_goal = st.text_input("修改 Sana 當前目標", value=st.session_state.current_goal)
-    
-    new_lib = st.text_area("目標庫 (逗號分隔)", value=", ".join(st.session_state.goal_library))
-    st.session_state.goal_library = [x.strip() for x in new_lib.split(",")]
-    
-    if st.button("重置系統"):
+    st.divider()
+    if st.button("🔴 重置系統 (Reset All)"):
         st.session_state.clear()
         st.rerun()
 
 # 主介面
-col_left, col_right = st.columns([6, 4])
+col_chat, col_monitor = st.columns([6, 4])
 
-with col_left:
-    st.subheader("🏋️‍♀️ 語場互動區")
+with col_chat:
+    st.subheader("🏋️‍♀️ Sana 互動視窗")
     
-    # 顯示歷史訊息
-    chat_container = st.container(height=500)
+    # 聊天紀錄
+    chat_box = st.container(height=500)
     for m in st.session_state.messages:
-        with chat_container.chat_message(m["role"]):
-            st.markdown(f"*{m['action']}* {m['speech']}")
+        with chat_box.chat_message(m["role"]):
+            st.write(f"*{m['action']}* {m['speech']}")
     
-    # 輸入區
-    with st.form("input_form", clear_on_submit=True):
-        act = st.text_input("動作姿態 (選填)", placeholder="(靠很近)")
-        speech = st.text_input("對玩家說...", placeholder="嘿，今天要練哪？")
-        submitted = st.form_submit_button("送出至 VFO")
-        
-        if submitted and speech:
-            # 觸發 VFO 運算
-            res = run_vfo_engine(speech, act, selected_model)
-            if res:
-                # 更新狀態機
-                st.session_state.scores = res["new_scores"]
-                st.session_state.prev_strategy = res["next_module_a"]
-                st.session_state.black_box = res
-                
-                # 紀錄訊息
-                st.session_state.messages.append({"role": "user", "action": act, "speech": speech})
-                st.session_state.messages.append({"role": "assistant", "action": res["sana_action"], "speech": res["sana_speech"]})
-                
-                # 處理目標變換
-                if "新目標" in res["goal_decision"]:
-                    st.session_state.current_goal = res["goal_decision"]
-                
-                st.rerun()
+    # 輸入窗
+    with st.form("chat_input", clear_on_submit=True):
+        u_act = st.text_input("動作 (姿態)", placeholder="(例如：拿著手搖飲走過來)")
+        u_speech = st.text_input("對話內容", placeholder="說點什麼...")
+        if st.form_submit_button("送出") and u_speech:
+            # 執行 Pipeline
+            results = run_vfo_pipeline(u_speech, u_act, selected_model)
+            
+            # 更新狀態
+            st.session_state.nodes_output = results
+            st.session_state.scores = results['scores_new'].get('scores', st.session_state.scores) if isinstance(results['scores_new'], dict) else st.session_state.scores
+            st.session_state.prev_module_a = results['next_a']
+            st.session_state.last_sana_output = results['final_output'].get('sana_speech', '')
+            
+            # 加入對話
+            st.session_state.messages.append({"role": "user", "action": u_act, "speech": u_speech})
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "action": results['final_output'].get('sana_action', '(思考中)'), 
+                "speech": results['final_output'].get('sana_speech', '...')
+            })
+            st.rerun()
 
-with col_right:
-    st.subheader("📊 儀表板與黑盒子")
-    
-    # 數值顯示
-    m_cols = st.columns(3)
+with col_monitor:
+    st.subheader("📊 VFO 儀表板")
     s = st.session_state.scores
-    m_cols[0].metric("L (友善)", s["L"])
-    m_cols[1].metric("T (信任)", s["T"])
-    m_cols[2].metric("MF (疲憊)", s["MF"], delta_color="inverse")
-    m_cols[0].metric("SAI (優勢)", s["SAI"])
-    m_cols[1].metric("B-D (防禦)", s["BD"])
-
-    st.divider()
+    mc = st.columns(3)
+    mc[0].metric("L (友善)", s.get("L", 0))
+    mc[1].metric("T (信任)", s.get("T", 0))
+    mc[2].metric("MF (疲憊)", s.get("MF", 0), delta_color="inverse")
     
-    # 黑盒子詳解
-    if st.session_state.black_box:
-        bb = st.session_state.black_box
-        with st.expander("👁️ 模組 A & B (戰略讀取與他省)", expanded=True):
-            st.write(f"**選取的內存:** {bb.get('selected_memories')}")
-            st.write(f"**戰略判定:** {bb.get('final_strategy')}")
+    st.divider()
+    st.write(f"**當前標籤：** `{st.session_state.user_labels}`")
+    st.write(f"**當前目標：** `{st.session_state.current_goal}`")
+    
+    # 節點展開查看
+    if st.session_state.nodes_output:
+        st.subheader("👁️ 節點追蹤 (分步存取紀錄)")
+        nb = st.session_state.nodes_output
+        
+        with st.expander("Node 1-3: 內存與分數決策"):
+            st.write("**提取內存：**", nb.get('memories'))
+            st.write("**調分理由：**", nb.get('scores_new', {}).get('reason', '無'))
             
-        with st.expander("🎭 內外分離 (模組 C & D)"):
-            st.markdown(f"<div class='inner-os'><b>模組 C (內心真實):</b><br>{bb.get('module_c')}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='mask-os'><b>模組 D (面具偽裝):</b><br>{bb.get('module_d')}</div>", unsafe_allow_html=True)
+        with st.expander("🎭 Node 4-5: 內外分離測試", expanded=True):
+            st.markdown(f"<div class='inner-os'><b>模組 C (內心):</b><br>{nb.get('module_c')}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='mask-os'><b>模組 D (面具):</b><br>{nb.get('module_d')}</div>", unsafe_allow_html=True)
+            st.caption("※ 系統已確認：Node 5 在鑄造面具時未讀取 Node 4 緩衝區內容。")
             
-        with st.expander("📉 評分邏輯"):
-            st.write(bb.get('score_logic'))
-            
-        with st.expander("📅 下輪預載 (下一輪模組 A)"):
-            st.info(bb.get('next_module_a'))
-    else:
-        st.info("尚未有運算紀錄，請開始對話。")
+        with st.expander("📅 Node 9: 次輪策略 (Module A)"):
+            st.info(nb.get('next_a'))
