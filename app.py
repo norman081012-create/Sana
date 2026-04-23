@@ -2,27 +2,10 @@ import streamlit as st
 import google.generativeai as genai
 import json
 
-# ==========================================
-# 1. 系統初始化與 API
-# ==========================================
-st.set_page_config(page_title="Project Sana VFO v7.3 核心控制台", layout="wide")
+# =====================================================================
+# 🌟 第一區：Sana 核心 (Sana Core) - 包含模塊資料庫、系統規則與語意翻譯層
+# =====================================================================
 
-st.markdown("""
-<style>
-    .inner-os { color: #ff4b4b; background-color:#2b1a1a; padding: 10px; border-left: 3px solid #ff4b4b; margin-bottom: 5px; border-radius: 4px; }
-    .mask-os { color: #00ffcc; background-color:#1a2b2b; padding: 10px; border-left: 3px solid #00ffcc; margin-bottom: 5px; border-radius: 4px; }
-    .stMetric { background-color: #1e1e1e; padding: 10px; border-radius: 8px; border: 1px solid #444; }
-</style>
-""", unsafe_allow_html=True)
-
-# 你的 API KEY
-API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE"
-genai.configure(api_key=API_KEY)
-MODEL_NAME = "gemini-1.5-pro" # 確保穩定運行
-
-# ==========================================
-# 2. 核心設定檔 (1~9 模塊與掃描器)
-# ==========================================
 SANA_MODULES = """
 ▶ 【核心模塊 1：健身】
 [L1] 追求極致：肉體控制、完美體態 / 現實代價：關節耗損、社交剝奪
@@ -111,10 +94,8 @@ TURING_SCANNER = """
 ※ 若當次輸入累積侵入值 ≥ 2 點：立即中斷常規戰略，強制鎖定【模塊 9】，MF 瞬間 +30。
 """
 
-# ==========================================
-# 3. 語意翻譯層 (將數字轉化為 LLM 聽得懂的劇本)
-# ==========================================
 def translate_state_to_semantics(scores):
+    """將冰冷的數字轉換為 LLM 懂的劇本情境"""
     mf = scores.get('MF', 20)
     bd = scores.get('BD', 100)
     
@@ -130,19 +111,15 @@ def translate_state_to_semantics(scores):
 
     return {"mf_situation": mf_str, "bd_situation": bd_str}
 
-# ==========================================
-# 4. 狀態機初始化與 API 呼叫器
-# ==========================================
-if "initialized" not in st.session_state:
-    st.session_state.initialized = True
-    st.session_state.messages = []
-    st.session_state.scores = {"L": 0, "T": 0, "SAI": 50, "BD": 100, "MF": 20}
-    st.session_state.current_goal = "撐完這場相親並保持基本禮貌"
-    st.session_state.prev_module_a = "保持中立，觀察玩家語感，維持基礎社交距離。"
-    st.session_state.nodes_output = {}
+# =====================================================================
+# ⚙️ 第二區：運作區 (Operations) - 包含 API 呼叫器與 Node Pipeline
+# =====================================================================
 
-def call_llm(prompt, json_mode=True):
-    model = genai.GenerativeModel(MODEL_NAME)
+API_KEY = "AIzaSyCuGgEHKMohZyrt365D9kZScDpU4iEryKE" # 填寫你的 API KEY
+genai.configure(api_key=API_KEY)
+
+def call_llm(prompt, model_name, json_mode=True):
+    model = genai.GenerativeModel(model_name)
     config = {"response_mime_type": "application/json"} if json_mode else None
     try:
         response = model.generate_content(prompt, generation_config=config)
@@ -153,16 +130,12 @@ def call_llm(prompt, json_mode=True):
         if json_mode: return {"error": str(e)}
         return f"ERROR: {str(e)}"
 
-# ==========================================
-# 5. 🚀 多節點核心管線 (Node-based Pipeline)
-# ==========================================
-def run_vfo_chain(user_speech, user_action):
+def run_vfo_chain(user_speech, user_action, selected_model):
     nodes = {}
-    
     with st.status("🧠 VFO 節點串聯運算中...", expanded=True) as status:
         
-        # --- Node 1: 感知與掃描 ---
-        st.write("Node 1: 執行圖靈掃描與內存檢索...")
+        # --- Node 1: 感知與掃描 (新增 模組 B 生成) ---
+        st.write("Node 1: 執行圖靈掃描、內存檢索與模組B...")
         prompt_1 = f"""
         你現在負責 VFO 引擎的【步驟一】。
         玩家動作：{user_action} / 玩家對話：{user_speech} / 上輪策略：{st.session_state.prev_module_a}
@@ -171,96 +144,136 @@ def run_vfo_chain(user_speech, user_action):
         任務：
         1. 進行 AI 語感掃描，計算侵入值。
         2. 從模塊 1~9 中精準提取 2~3 個相關內存(L1-L6)。
-        請回傳 JSON: {{"ai_scanner_score": 數字, "selected_memories": "提取內容", "trigger_module_9": true/false}}
+        3. 產出「模組 B (他省/戰略判定)」：客觀分析玩家意圖與 Sana 應對底線。
+        請回傳 JSON: {{"ai_scanner_score": 數字, "selected_memories": "提取內容", "trigger_module_9": true/false, "module_b": "戰略判定內容"}}
         """
-        nodes['node1_perception'] = call_llm(prompt_1, json_mode=True)
+        nodes['node1_perception'] = call_llm(prompt_1, selected_model, json_mode=True)
         p1_data = nodes.get('node1_perception', {})
         
         # --- Node 2: 數值結算 ---
         st.write("Node 2: 儀表板動態衰退與結算...")
         prompt_2 = f"""
-        當前儀表板：{st.session_state.scores}
+        當前儀表板：{st.session_state.scores} (包含 L, T, SAI, BD, MF)
         AI侵入值：{p1_data.get('ai_scanner_score', 0)}，觸發模塊9: {p1_data.get('trigger_module_9', False)}
         強制規則：
         1. 若 L, T > 5，自動衰退 (當前-5)/2。
         2. 若觸發模塊 9，MF 瞬間 +30。MF 越高，L 與 T 扣分越重。
-        任務：結算最新分數。
-        請回傳 JSON: {{"new_scores": {{"L":.., "T":.., "SAI":.., "BD":.., "MF":..}}, "reason": "說明"}}
+        任務：結算最新分數 (L, T, SAI, BD, MF 都要給定新值)。
+        請回傳 JSON: {{"new_scores": {{"L":.., "T":.., "SAI":.., "BD":.., "MF":..}}, "reason": "分數異動說明"}}
         """
-        nodes['node2_scores'] = call_llm(prompt_2, json_mode=True)
+        nodes['node2_scores'] = call_llm(prompt_2, selected_model, json_mode=True)
         new_scores = nodes.get('node2_scores', {}).get('new_scores', st.session_state.scores)
         
-        # 🌟 將冰冷的數字轉換為劇本語意
+        # 轉換劇本
         current_situation = translate_state_to_semantics(new_scores)
         
         # --- Node 3: 內心 OS ---
         st.write("Node 3: 內心 OS 生成...")
         prompt_3 = f"""
-        玩家剛說了：{user_speech}
-        提取的內存：{p1_data.get('selected_memories', '')}
-        當前心理防禦狀態：{current_situation['bd_situation']}
-        任務：寫出 Sana 此刻最真實、未經過濾、可能帶有防禦或厭惡的內心吐槽 (模組 C)。
+        玩家說了：{user_speech} / 提取的內存：{p1_data.get('selected_memories', '')}
+        當前心理防禦：{current_situation['bd_situation']}
+        任務：寫出 Sana 此刻最真實、可能帶有防禦或厭惡的內心吐槽 (模組 C)。
         """
-        nodes['node3_inner'] = call_llm(prompt_3, json_mode=False)
+        nodes['node3_inner'] = call_llm(prompt_3, selected_model, json_mode=False)
         
         # --- Node 4: 營業面具 (物理隔離) ---
         st.write("Node 4: 物理隔離鑄造面具...")
         prompt_4 = f"""
-        玩家剛說了：{user_speech}
-        你現在不知道 Sana 內心在想什麼。請嚴格根據以下強制狀態演繹：
-        【強制演出狀態】：{current_situation['mf_situation']}
-        任務：依照上述狀態，設計她此刻給外人看的「表面態度與肢體動作」 (模組 D)。
+        玩家說了：{user_speech}
+        請嚴格根據以下強制狀態演繹：【強制演出狀態】：{current_situation['mf_situation']}
+        任務：設計她此刻給外人看的「表面態度與肢體動作」 (模組 D)。你不知道她的內心想法。
         """
-        nodes['node4_mask'] = call_llm(prompt_4, json_mode=False)
+        nodes['node4_mask'] = call_llm(prompt_4, selected_model, json_mode=False)
 
         # --- Node 5: 統籌與輸出 ---
         st.write("Node 5: 統籌裁決與最終台詞...")
         prompt_5 = f"""
         模組 C (內心)：{nodes.get('node3_inner', '')}
         模組 D (面具)：{nodes.get('node4_mask', '')}
-        任務：結合兩者寫出最終回覆。
-        最高限制：單次對話不超過 30 字，符合「說人話」模組，必須帶有日常語氣斷點。不准寫成小說。
+        任務：結合兩者寫出最終回覆。單次對話不超過 30 字，符合「說人話」模組，必須帶有語氣斷點。
         請回傳 JSON: {{"action": "(動作表情)", "speech": "「台詞」"}}
         """
-        nodes['node5_output'] = call_llm(prompt_5, json_mode=True)
+        nodes['node5_output'] = call_llm(prompt_5, selected_model, json_mode=True)
 
-        # --- Node 6: 沉澱與更新 ---
+        # --- Node 6: 沉澱與更新 (新增細分三標準) ---
         st.write("Node 6: 回合反思與目標更新...")
         prompt_6 = f"""
-        當前目標：{st.session_state.current_goal}
-        剛才的回覆：{nodes.get('node5_output', {}).get('speech', '')}
-        任務：
-        1. 評估目標是否需變更。
-        2. 產出「下一輪策略與判定標準 (模組 A)」。
-        請回傳 JSON: {{"new_goal": "...", "next_module_a": "..."}}
+        當前目標：{st.session_state.current_goal} / 剛才回覆：{nodes.get('node5_output', {}).get('speech', '')}
+        最新分數：{new_scores}
+        任務：請進行回合沉澱，明確給出下列三項指標。
+        請回傳 JSON: {{
+            "new_overall_goal": "新總目標", 
+            "next_module_a": "新策略目標(下輪應對態度)", 
+            "score_criteria": "下輪分數異動判斷標準(玩家做什麼加分/扣分)"
+        }}
         """
-        nodes['node6_reflection'] = call_llm(prompt_6, json_mode=True)
+        nodes['node6_reflection'] = call_llm(prompt_6, selected_model, json_mode=True)
 
         status.update(label="✅ VFO 全節點管線運算完成！", state="complete", expanded=False)
 
     return nodes
 
-# ==========================================
-# 6. UI 呈現區
-# ==========================================
+
+# =====================================================================
+# 🖥️ 第三區：UI 介面 (UI / Visual Layout)
+# =====================================================================
+
+st.set_page_config(page_title="Project Sana VFO v7.3 控制台", layout="wide")
+
+st.markdown("""
+<style>
+    .inner-os { color: #ff4b4b; background-color:#2b1a1a; padding: 10px; border-left: 3px solid #ff4b4b; margin-bottom: 5px; border-radius: 4px; }
+    .mask-os { color: #00ffcc; background-color:#1a2b2b; padding: 10px; border-left: 3px solid #00ffcc; margin-bottom: 5px; border-radius: 4px; }
+    .stMetric { background-color: #1e1e1e; padding: 10px; border-radius: 8px; border: 1px solid #444; }
+</style>
+""", unsafe_allow_html=True)
+
+# 狀態機初始化
+if "initialized" not in st.session_state:
+    st.session_state.initialized = True
+    st.session_state.messages = []
+    st.session_state.scores = {"L": 0, "T": 0, "SAI": 50, "BD": 100, "MF": 20}
+    st.session_state.current_goal = "撐完這場相親並保持基本禮貌"
+    st.session_state.current_label = "初次見面的陌生人"
+    st.session_state.prev_module_a = "保持中立，觀察玩家語感，維持基礎社交距離。"
+    st.session_state.nodes_output = {}
+
+# --- 左側邊欄 (控制與庫存) ---
 with st.sidebar:
     st.title("⚙️ VFO 核心後台")
-    st.caption("v7.3 Node-Based Pipeline + Semantic Translator")
+    
+    st.subheader("1. 驅動大腦設定")
+    selected_model = st.selectbox(
+        "選擇可用 LLM 模型", 
+        ["gemini-1.5-pro", "gemini-1.5-flash"]
+    )
     
     st.divider()
-    st.subheader("🛠️ 狀態覆寫 (Cheat)")
-    st.session_state.current_goal = st.text_input("當前目標", st.session_state.current_goal)
-    st.session_state.user_labels = st.text_input("玩家標籤", st.session_state.user_labels)
+    st.subheader("2. 靈魂孵化狀態")
+    st.write("🌱 現有種子 (已載入):")
+    st.code("健身, 做業績, 歐洲, 教練, 蛋包飯, 手搖飲, 歌單, 外放個性, AI抗體, 正妹")
     
+    st.divider()
+    st.subheader("3. 狀態覆寫與庫存")
+    st.write("**當前目標庫存 (Goal)**")
+    # 將選擇的目標綁定覆寫到 session_state
+    override_goal = st.selectbox("選擇或覆寫當前目標", ["撐完這場相親並保持基本禮貌", "維持專業形象", "避免被識破是AI", "引導至課程推銷"], index=0)
+    st.session_state.current_goal = override_goal
+
+    st.write("**玩家標籤庫存 (Label)**")
+    # 將選擇的標籤綁定覆寫到 session_state
+    override_label = st.selectbox("選擇或覆寫玩家標籤", ["初次見面的陌生人", "裝闊直男", "潛力學員", "瞎妹"], index=0)
+    st.session_state.current_label = override_label
+
     if st.button("🔴 重置系統狀態"):
         st.session_state.clear()
         st.rerun()
 
+# --- 主畫面佈局 ---
 col_chat, col_monitor = st.columns([5, 5])
 
 with col_chat:
     st.subheader("🏋️‍♀️ Sana 互動視窗")
-    
     chat_box = st.container(height=550)
     for m in st.session_state.messages:
         with chat_box.chat_message(m["role"]):
@@ -269,21 +282,22 @@ with col_chat:
     with st.form("chat_input", clear_on_submit=True):
         u_act = st.text_input("動作 (姿態)", placeholder="(拿著手搖飲走過來)")
         u_speech = st.text_input("對話內容", placeholder="說點什麼...")
-        
         if st.form_submit_button("送出至 VFO") and u_speech:
-            results = run_vfo_chain(u_speech, u_act)
+            # 呼叫運作區
+            results = run_vfo_chain(u_speech, u_act, selected_model)
             
-            # 更新狀態機
+            # 更新狀態
             st.session_state.nodes_output = results
             if 'node2_scores' in results and 'new_scores' in results['node2_scores']:
                 st.session_state.scores = results['node2_scores']['new_scores']
+            
             if 'node6_reflection' in results:
-                st.session_state.current_goal = results['node6_reflection'].get('new_goal', st.session_state.current_goal)
+                st.session_state.current_goal = results['node6_reflection'].get('new_overall_goal', st.session_state.current_goal)
                 st.session_state.prev_module_a = results['node6_reflection'].get('next_module_a', '')
             
-            # 獲取 Sana 台詞
+            # 獲取最終台詞
             final_out = results.get('node5_output', {})
-            sana_act = final_out.get('action', '(思考)')
+            sana_act = final_out.get('action', '(無動作)')
             sana_say = final_out.get('speech', '...')
             
             st.session_state.messages.append({"role": "user", "action": u_act, "speech": u_speech})
@@ -293,18 +307,24 @@ with col_chat:
 with col_monitor:
     st.subheader("📊 VFO 儀表板與黑盒子")
     
+    # 4. 包含 SAI 的五大指標
     s = st.session_state.scores
-    m_cols = st.columns(3)
-    m_cols[0].metric("L (友善)", s.get("L", 0))
-    m_cols[1].metric("T (信任)", s.get("T", 0))
-    m_cols[2].metric("MF (疲憊)", s.get("MF", 20), delta_color="inverse")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("L (友善)", s.get("L", 0))
+    m2.metric("T (信任)", s.get("T", 0))
+    m3.metric("MF (疲憊)", s.get("MF", 20), delta_color="inverse")
+    m4.metric("BD (邊界)", s.get("BD", 100), delta_color="inverse")
+    m5.metric("SAI (優勢)", s.get("SAI", 50))
     
     st.divider()
     
     nb = st.session_state.nodes_output
     if nb:
-        with st.expander("Node 1 & 2: 感知與結算", expanded=False):
+        with st.expander("👁️ Node 1 & 2: 感知、模組B與結算", expanded=False):
             st.write("**提取內存:**", nb.get('node1_perception', {}).get('selected_memories'))
+            # 5. 顯示模組 B
+            st.write("**模組 B (他省/戰略判定):**")
+            st.info(nb.get('node1_perception', {}).get('module_b', '無數據'))
             st.write("**分數異動理由:**", nb.get('node2_scores', {}).get('reason'))
             
         with st.expander("🎭 Node 3 & 4: 內外分離 (語意翻譯)", expanded=True):
@@ -313,8 +333,14 @@ with col_monitor:
             st.markdown(f"<div class='inner-os'><b>模組 C (內心):</b><br>{nb.get('node3_inner')}</div>", unsafe_allow_html=True)
             st.markdown(f"<div class='mask-os'><b>模組 D (面具):</b><br>{nb.get('node4_mask')}</div>", unsafe_allow_html=True)
             
-        with st.expander("📅 Node 6: 次輪策略", expanded=False):
-            st.write("**新目標:**", nb.get('node6_reflection', {}).get('new_goal'))
-            st.info(nb.get('node6_reflection', {}).get('next_module_a'))
+        # 6. 新總目標、新策略目標、下輪判斷標準
+        with st.expander("📅 Node 6: 階段 0 反思與次輪預載", expanded=True):
+            ref = nb.get('node6_reflection', {})
+            st.write("**🎯 新總目標 (Overall Goal):**")
+            st.success(ref.get('new_overall_goal', '無'))
+            st.write("**📝 新策略目標 (Next Module A):**")
+            st.info(ref.get('next_module_a', '無'))
+            st.write("**⚖️ 下輪分數異動判斷標準 (Score Criteria):**")
+            st.warning(ref.get('score_criteria', '無'))
     else:
         st.info("請在左側輸入對話以啟動 VFO 引擎。")
