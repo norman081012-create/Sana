@@ -1,297 +1,301 @@
 import streamlit as st
-import random
 import math
+import random
 
-# ==========================================
-# 1. 初始化與核心系統 (Game State & Core Logic)
-# ==========================================
-def init_game():
-    st.session_state.phase = "Day 0"
-    st.session_state.day = 0
+# 設定網頁標題與圖示
+st.set_page_config(page_title="喪屍末日據點經營模擬器", page_icon="🧟", layout="wide")
+
+# 初始化遊戲狀態
+if 'game_started' not in st.session_state:
+    st.session_state.game_started = True
+    st.session_state.month = 1
     
-    # 玩家核心數據
-    st.session_state.player = {
-        "stats": {"偵查": 4, "戰鬥": 4, "生產": 4, "魅力": 4, "特殊技能": 0},
-        "job": None,
-        "level": 1,
-        "exp": 0,
-        "unspent_points": 0,
-        "ap": 16,
-        "max_ap": 16
+    # 基礎資源
+    st.session_state.human = 35          # 人力 (初始35人以利測試幼兒園無條件進位機制)
+    st.session_state.food = 150          # 食物
+    st.session_state.supply_box = 20     # 據點資源箱數量 (有限資源)
+    
+    # 箱內開出的二級資源
+    st.session_state.ammo = 30           # 彈藥
+    st.session_state.meds = 20           # 藥物
+    st.session_state.gas = 10            # 汽油
+    st.session_state.materials = 40      # 材料
+    
+    # 建築物數量 (初始配置)
+    st.session_state.buildings = {
+        "幼兒園": 1,
+        "農場": 1,
+        "藥學廠": 1,
+        "彈藥工廠": 1,
+        "拆箱區": 1
     }
-    st.session_state.inventory = {"食物": 10, "建材": 0, "藥物": 0, "器具": 0, "槍械": 0, "特殊": 0}
-    st.session_state.followers = []
-    st.session_state.npcs = []
-    st.session_state.logs = ["系統啟動：長官，歡迎來到末日指揮中心。"]
-
-def gain_exp(amount):
-    """處理經驗值獲取與升級邏輯"""
-    st.session_state.player["exp"] += amount
-    st.session_state.logs.insert(0, f"🌟 獲得 {amount} 點經驗值。")
-    if st.session_state.player["exp"] >= 100:
-        st.session_state.player["level"] += 1
-        st.session_state.player["exp"] -= 100
-        st.session_state.player["unspent_points"] += 1
-        st.session_state.player["max_ap"] += 1 
-        st.toast("🆙 升級了！獲得 1 點可分配屬性點！")
-        st.session_state.logs.insert(0, f"🆙 升級至 Lv.{st.session_state.player['level']}！")
-
-def generate_location(job_type):
-    """根據職業生成出生點與資源乘數"""
-    locations = {
-        "警察": {"name": "警察局", "def_bonus": 8, "zombies": "未知", "mods": {"食物": 1.0, "建材": 1.0, "藥物": 1.0, "器具": 1.0, "槍械": 1.5, "特殊": 1.2}},
-        "高管": {"name": "辦公大樓", "def_bonus": 5, "zombies": "未知", "mods": {"食物": 1.2, "建材": 1.0, "藥物": 1.0, "器具": 1.1, "槍械": 0.9, "特殊": 1.0}},
-        "農夫": {"name": "農莊", "def_bonus": 3, "zombies": "未知", "mods": {"食物": 1.5, "建材": 1.2, "藥物": 0.8, "器具": 1.0, "槍械": 0.5, "特殊": 1.0}}
-    }
-    loc = locations[job_type]
-    loc["nodes"] = [{"id": i+1, "richness": random.randint(3, 10), "searched": False} for i in range(5)]
-    return loc
-
-def generate_npcs(count):
-    """生成初始中立人口"""
-    npcs = []
-    names = ["阿傑", "老王", "小美", "陳大叔", "李姐", "建國", "志明", "春嬌"]
-    items = ["食物", "藥物", "器具"]
-    for i in range(count):
-        npc = {
-            "id": i,
-            "name": f"倖存者 {random.choice(names)}_{i}",
-            "stats": {"偵查": random.randint(1, 5), "戰鬥": random.randint(1, 5), "生產": random.randint(1, 5), "魅力": random.randint(1, 5)},
-            "desired_item": random.choice(items),
-            "friendship": 0,
-            "probed": False,
-            "recruited": False
-        }
-        npcs.append(npc)
-    return npcs
-
-def calculate_loot(rolls, location_mods, player_stats, job):
-    """處理擲骰與物資判定"""
-    base_weights = {"食物": 30, "建材": 25, "藥物": 15, "器具": 15, "槍械": 10, "特殊": 5}
-    adjusted_weights = {k: v * location_mods.get(k, 1.0) for k, v in base_weights.items()}
-    special_stat = player_stats["特殊技能"]
     
-    if job == "警察":
-        adjusted_weights["槍械"] *= (1 + (special_stat * 0.1))
-    elif job == "農夫":
-        adjusted_weights["食物"] *= (1 + (special_stat * 0.1))
-        adjusted_weights["建材"] *= (1 + (special_stat * 0.05))
-    elif job == "高管":
-        adjusted_weights["特殊"] *= (1 + (special_stat * 0.15))
+    # 歷史紀錄日誌
+    st.session_state.logs = ["【系統】遊戲開始！建立你的末日據點，帶領倖存者活下去。"]
 
-    loot_results = {"食物": 0, "建材": 0, "藥物": 0, "器具": 0, "槍械": 0, "特殊": 0}
-    items = list(adjusted_weights.keys()) + ["空"]
-    weights = list(adjusted_weights.values()) + [sum(adjusted_weights.values()) * 0.05]
+# 遊戲標題
+st.title("🧟 喪屍末日據點經營模擬器")
+st.caption("基於核心資源轉換循環與據點特性的策略原型")
 
-    for _ in range(rolls):
-        found = random.choices(items, weights=weights, k=1)[0]
-        if found != "空":
-            loot_results[found] += 1
-    return loot_results
+# 重設遊戲按鈕
+if st.sidebar.button("🔄 重設遊戲狀態"):
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+    st.rerun()
 
-if 'phase' not in st.session_state:
-    init_game()
+# 顯示當前月份與核心警示
+st.sidebar.markdown(f"## 📅 當前時間：第 **{st.session_state.month}** 個月")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 💡 生存規則提醒")
+st.sidebar.write("1. **每個人力** 每月固定消耗 **2單位食物**。")
+st.sidebar.write("2. **每個人力** 每月有 20% 機率生病，需消耗 **1單位藥物**，若藥物不足人口會減少。")
+st.sidebar.write("3. **資源箱** 是有限的，抽完就必須尋找新據點。")
+st.sidebar.write("4. 每月都有可能遭遇**喪屍襲擊**或**人類派系互動**！")
 
-# ==========================================
-# 左側邊欄：角色狀態面板
-# ==========================================
-if st.session_state.phase != "Day 0":
-    with st.sidebar:
-        st.header(f"👤 長官 ({st.session_state.player['job']})")
-        st.subheader(f"Lv. {st.session_state.player['level']}")
-        st.progress(st.session_state.player["exp"] / 100, text=f"EXP: {st.session_state.player['exp']} / 100")
-        st.metric("⚡ 行動點數 (AP)", f"{st.session_state.player['ap']} / {st.session_state.player['max_ap']}")
-        
-        st.divider()
-        st.markdown("### 📊 五維能力")
-        for stat, val in st.session_state.player["stats"].items():
-            col_s1, col_s2 = st.columns([3, 1])
-            col_s1.write(f"**{stat}**: {val}")
-            if st.session_state.player["unspent_points"] > 0:
-                if col_s2.button("➕", key=f"add_{stat}"):
-                    st.session_state.player["stats"][stat] += 1
-                    st.session_state.player["unspent_points"] -= 1
-                    st.session_state.player["max_ap"] += 1
-                    st.session_state.player["ap"] += 1
-                    st.rerun()
-                    
-        if st.session_state.player["unspent_points"] > 0:
-            st.info(f"✨ 尚有 {st.session_state.player['unspent_points']} 點屬性可分配")
+# 頂部資源看板
+st.markdown("### 📦 據點物資現況")
+col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+col1.metric("👥 人力 (總口數)", st.session_state.human)
+col2.metric("🍞 食物", st.session_state.food)
+col3.metric("📦 剩餘資源箱", st.session_state.supply_box)
+col4.metric("💥 彈藥", st.session_state.ammo)
+col5.metric("💊 藥物", st.session_state.meds)
+col6.metric("⛽ 汽油", st.session_state.gas)
+col7.metric("🪵 材料", st.session_state.materials)
 
-# ==========================================
-# 第 0 天：創角
-# ==========================================
-if st.session_state.phase == "Day 0":
-    st.title("☢️ 末日指揮中心 - 第 0 天：危機爆發")
-    st.subheader("🛠️ 分配初始能力值 (共 16 點)")
+st.markdown("---")
+
+# 遊戲主要區塊：左邊配置人力/建築，右邊顯示事件日誌
+main_col1, main_col2 = st.columns([3, 2])
+
+with main_col1:
+    st.markdown("### 🛠️ 據點建築與人力派駐管理")
+    st.write("請分配你的人力到各個建築物進行生產（未分配的人力將留守進行基本防禦）。")
     
-    if 'temp_stats' not in st.session_state:
-        st.session_state.temp_stats = {"偵查": 4, "戰鬥": 4, "生產": 4, "魅力": 4, "特殊技能": 0}
-        
-    c1, c2, c3, c4, c5 = st.columns(5)
-    st.session_state.temp_stats["偵查"] = c1.number_input("偵查", 1, 10, st.session_state.temp_stats["偵查"])
-    st.session_state.temp_stats["戰鬥"] = c2.number_input("戰鬥", 1, 10, st.session_state.temp_stats["戰鬥"])
-    st.session_state.temp_stats["生產"] = c3.number_input("生產", 1, 10, st.session_state.temp_stats["生產"])
-    st.session_state.temp_stats["魅力"] = c4.number_input("魅力", 1, 10, st.session_state.temp_stats["魅力"])
-    st.session_state.temp_stats["特殊技能"] = c5.number_input("特殊技能", 0, 10, st.session_state.temp_stats["特殊技能"])
+    # 人力分配控制項
+    max_human = st.session_state.human
     
-    total_points = sum(st.session_state.temp_stats.values())
+    st.markdown(f"**可用總人力：{max_human} 人**")
     
-    if total_points > 16:
-        st.error(f"⚠️ 點數超標！已使用：{total_points}/16 點。")
-    elif total_points < 16:
-        st.warning(f"⚠️ 還有未分配的點數！已使用：{total_points}/16 點。")
+    # 1. 幼兒園 (被動生產)
+    st.markdown("#### 🏫 幼兒園 (人口繁衍中心)")
+    kg_count = st.session_state.buildings["幼兒園"]
+    kg_prod = math.ceil(max_human / 30) * kg_count
+    st.info(f"當前數量：{kg_count} 間 | 特性：每個月自動產出 `總人口 / 30 (無條件進位)` 的人力。本月預期新增：**{kg_prod}** 人力。")
+    
+    # 2. 農場
+    st.markdown("#### 🌾 農場")
+    farm_workers = st.slider("派駐農場人力 (每人產出 5 食物)", 0, max_human, min(10, max_human), key="farm")
+    
+    # 3. 彈藥工廠
+    st.markdown("#### 🏭 彈藥工廠")
+    max_after_farm = max(0, max_human - farm_workers)
+    ammo_workers = st.slider("派駐彈藥工廠人力 (每人消耗 2 材料 ➡️ 產出 4 彈藥)", 0, max_human, min(5, max_after_farm), key="ammo_fac")
+    
+    # 4. 藥學廠
+    st.markdown("#### 🧪 藥學廠")
+    max_after_ammo = max(0, max_after_farm - ammo_workers)
+    med_workers = st.slider("派駐藥學廠人力 (每人消耗 2 食物 ➡️ 產出 3 藥物)", 0, max_human, min(5, max_after_ammo), key="med_fac")
+    
+    # 5. 拆箱區
+    st.markdown("#### 📦 資源箱拆箱區")
+    max_after_med = max(0, max_after_ammo - med_workers)
+    box_workers = st.slider("派駐拆箱人力 (每人消耗 1 資源箱 ➡️ 隨機獲得基礎二級物資)", 0, max_human, min(5, max_after_med), key="box_fac")
+    
+    total_assigned = farm_workers + ammo_workers + med_workers + box_workers
+    unassigned = max_human - total_assigned
+    
+    if total_assigned > max_human:
+        st.error(f"❌ 警告：派駐總人力 ({total_assigned}人) 超過當前據點可用總人口 ({max_human}人)！請調整滑桿。")
+        btn_disabled = True
     else:
-        st.success(f"✅ 點數分配完成 (16/16)。請選擇下方職業開始遊戲。")
-        st.divider()
-        col1, col2, col3 = st.columns(3)
-        
-        def confirm_start(job):
-            st.session_state.player["stats"] = st.session_state.temp_stats.copy()
-            st.session_state.player["job"] = job
-            st.session_state.player["max_ap"] = total_points
-            st.session_state.player["ap"] = total_points
-            st.session_state.location = generate_location(job)
-            st.session_state.npcs = generate_npcs(20) # 生成 20 名中立人口
-            st.session_state.phase = "Day 1"
-            st.session_state.day = 1
-            st.rerun()
+        st.success(f"✅ 已分配人力：{total_assigned} 人 | 留守/防禦人力：{unassigned} 人")
+        btn_disabled = False
 
-        with col1:
-            st.subheader("🚓 警察局")
-            if st.button("成為警察"): confirm_start("警察")
-        with col2:
-            st.subheader("💼 辦公大樓")
-            if st.button("成為高管"): confirm_start("高管")
-        with col3:
-            st.subheader("🌾 農莊")
-            if st.button("成為農夫"): confirm_start("農夫")
-
-# ==========================================
-# 第 1 天及以後：核心遊玩系統
-# ==========================================
-elif st.session_state.phase == "Day 1":
-    st.title(f"☢️ 基地指揮中心 - 第 {st.session_state.day} 天")
-    st.markdown(f"### 📍 當前位置：{st.session_state.location['name']} (防禦加成：{st.session_state.location['def_bonus']}/10)")
+    st.markdown("---")
     
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("🍞 食物", st.session_state.inventory["食物"])
-    c2.metric("🧱 建材", st.session_state.inventory["建材"])
-    c3.metric("💊 藥物", st.session_state.inventory["藥物"])
-    c4.metric("🛠️ 器具", st.session_state.inventory["器具"])
-    c5.metric("🔫 槍械", st.session_state.inventory["槍械"])
-    c6.metric("🌟 特殊", st.session_state.inventory["特殊"])
-    
-    st.divider()
-    # 恢復為四個頁籤
-    tab1, tab2, tab3, tab4 = st.tabs(["🗺️ 廢墟探索", "🤝 中立人口", "📋 黨羽管理", "📜 系統日誌"])
-    
-    # --- 頁籤 1: 廢墟探索 ---
-    with tab1:
-        st.subheader("區域資源點")
-        recon_stat = st.session_state.player["stats"]["偵查"]
-        ap_cost = max(1, math.floor(20 / recon_stat))
+    # 前進下一回合/月份的按鈕與核心邏輯
+    if st.button("▶️ 結算本月，前進至下個月", disabled=btn_disabled, type="primary"):
+        new_logs = []
+        new_logs.append(f"--- 【第 {st.session_state.month} 個月 結算報告】 ---")
         
-        for i, node in enumerate(st.session_state.location["nodes"]):
-            col_a, col_b = st.columns([3, 1])
-            if not node["searched"]:
-                col_a.write(f"📦 資源點 #{node['id']} - 預估豐富度：{node['richness']} (需耗費 **{ap_cost} AP**)")
-                if col_b.button(f"🔍 消耗 {ap_cost} AP 搜索", key=f"search_{i}"):
-                    if st.session_state.player["ap"] >= ap_cost:
-                        st.session_state.player["ap"] -= ap_cost
-                        loot = calculate_loot(node["richness"], st.session_state.location["mods"], st.session_state.player["stats"], st.session_state.player["job"])
-                        
-                        loot_msg = [f"{item} x{qty}" for item, qty in loot.items() if qty > 0]
-                        for item, qty in loot.items():
-                            if qty > 0: st.session_state.inventory[item] += qty
-                        
-                        log_text = f"在資源點 #{node['id']} 找到了：" + "、".join(loot_msg) if loot_msg else f"在資源點 #{node['id']} 什麼都沒找到..."
-                        st.session_state.logs.insert(0, log_text)
-                        st.session_state.location["nodes"][i]["searched"] = True
-                        gain_exp(15)
-                        st.rerun()
-                    else:
-                        st.error("⚠️ 行動點數 (AP) 不足！")
-            else:
-                col_a.write(f"🪹 資源點 #{node['id']} - 已被搜刮一空。")
-                col_b.button("已搜索", disabled=True, key=f"searched_{i}")
-
-    # --- 頁籤 2: 中立人口互動 ---
-    with tab2:
-        st.subheader(f"本地中立倖存者 (共 {len([n for n in st.session_state.npcs if not n['recruited']])} 人)")
+        # 1. 人口自然增長 (幼兒園)
+        st.session_state.human += kg_prod
+        new_logs.append(f"👶 幼兒園發揮作用，本月新增了 {kg_prod} 名新生人力。")
         
-        # 互動的 AP 消耗設計 (可根據平衡度調整)
-        probe_ap = 1 
-        chat_ap = 1
-        
-        for i, npc in enumerate(st.session_state.npcs):
-            if npc["recruited"]: continue
-                
-            with st.expander(f"👤 {npc['name']} (友善度: {npc['friendship']})"):
-                if not npc["probed"]:
-                    st.write("數值與需求：未知")
-                    if st.button(f"👁️ 探虛實 (消耗 {probe_ap} AP)", key=f"probe_{i}"):
-                        if st.session_state.player["ap"] >= probe_ap:
-                            st.session_state.player["ap"] -= probe_ap
-                            st.session_state.npcs[i]["probed"] = True
-                            gain_exp(5) # 探聽情報也能獲得微量經驗
-                            st.rerun()
-                        else:
-                            st.error("⚠️ 行動點數 (AP) 不足！")
-                else:
-                    st.write(f"**五維能力**：偵查 {npc['stats']['偵查']} | 戰鬥 {npc['stats']['戰鬥']} | 生產 {npc['stats']['生產']} | 魅力 {npc['stats']['魅力']}")
-                    st.write(f"**期望物資**：{npc['desired_item']}")
-                    
-                    col_x, col_y = st.columns(2)
-                    with col_x:
-                        if st.button(f"💬 閒聊與送禮 (消耗 {chat_ap} AP)", key=f"gift_{i}"):
-                            if st.session_state.player["ap"] >= chat_ap:
-                                st.session_state.player["ap"] -= chat_ap
-                                # 若有期望物資則扣除並大幅加好感
-                                if st.session_state.inventory.get(npc['desired_item'], 0) > 0:
-                                    st.session_state.inventory[npc['desired_item']] -= 1
-                                    # 魅力值影響送禮與聊天的額外加成
-                                    bonus = math.floor(st.session_state.player["stats"]["魅力"] / 2)
-                                    st.session_state.npcs[i]["friendship"] += (20 + bonus)
-                                    st.toast(f"送禮成功！{npc['name']} 非常開心！")
-                                else:
-                                    bonus = math.floor(st.session_state.player["stats"]["魅力"] / 3)
-                                    st.session_state.npcs[i]["friendship"] += (5 + bonus)
-                                    st.toast("透過閒聊，友善度微幅提升。")
-                                gain_exp(5)
-                                st.rerun()
-                            else:
-                                st.error("⚠️ 行動點數 (AP) 不足！")
-                    
-                    with col_y:
-                        if npc["friendship"] >= 20:
-                            if st.button("🤝 招募進入團隊", key=f"recruit_{i}", type="primary"):
-                                st.session_state.npcs[i]["recruited"] = True
-                                st.session_state.followers.append(npc)
-                                st.session_state.logs.insert(0, f"🎉 成功招募 {npc['name']} 加入陣營！")
-                                gain_exp(30) # 招募成功獲得大量經驗
-                                st.rerun()
-                        else:
-                            st.button("🤝 招募 (友善度不足 20)", key=f"recruit_disabled_{i}", disabled=True)
-
-    # --- 頁籤 3: 黨羽管理 ---
-    with tab3:
-        st.subheader("你的黨羽名單")
-        if not st.session_state.followers:
-            st.info("目前還沒有人追隨你。去「中立人口」頁籤招募一些夥伴吧！")
+        # 2. 生產階段
+        # 農場產出
+        food_produced = farm_workers * 5
+        st.session_state.food += food_produced
+        if farm_workers > 0:
+            new_logs.append(f"🌾 農場投入 {farm_workers} 人，成功採收了 {food_produced} 單位食物。")
+            
+        # 彈藥工廠轉換
+        ammo_materials_needed = ammo_workers * 2
+        if st.session_state.materials >= ammo_materials_needed:
+            st.session_state.materials -= ammo_materials_needed
+            ammo_produced = ammo_workers * 4
+            st.session_state.ammo += ammo_produced
+            if ammo_workers > 0:
+                new_logs.append(f"🏭 彈藥工廠消耗 {ammo_materials_needed} 材料，製作了 {ammo_produced} 單位彈藥。")
         else:
-            for f in st.session_state.followers:
-                st.write(f"**{f['name']}**")
-                st.caption(f"能力：偵查 {f['stats']['偵查']} | 戰鬥 {f['stats']['戰鬥']} | 生產 {f['stats']['生產']} | 魅力 {f['stats']['魅力']}")
-                # 這裡保留任務指派的下拉選單，為後續的回合結算做準備
-                st.selectbox(
-                    "指派明日任務", 
-                    ["無", "協助搜索資源", "修築防禦工事", "據點守衛"], 
-                    key=f"task_{f['id']}"
-                )
-                st.divider()
+            # 材料不足，按比例生產
+            actual_workers = st.session_state.materials // 2
+            st.session_state.materials -= (actual_workers * 2)
+            ammo_produced = actual_workers * 4
+            st.session_state.ammo += ammo_produced
+            if ammo_workers > 0:
+                new_logs.append(f"⚠️ 材料不足！彈藥工廠僅能供 {actual_workers} 人運作，消耗全部材料產出 {ammo_produced} 單位彈藥。")
+                
+        # 藥學廠轉換
+        med_food_needed = med_workers * 2
+        if st.session_state.food >= med_food_needed:
+            st.session_state.food -= med_food_needed
+            med_produced = med_workers * 3
+            st.session_state.meds += med_produced
+            if med_workers > 0:
+                new_logs.append(f"🧪 藥學廠消耗 {med_food_needed} 食物，提煉了 {med_produced} 單位藥物。")
+        else:
+            actual_med_workers = st.session_state.food // 2
+            st.session_state.food -= (actual_med_workers * 2)
+            med_produced = actual_med_workers * 3
+            st.session_state.meds += med_produced
+            if med_workers > 0:
+                new_logs.append(f"⚠️ 食物不足！藥學廠僅能供 {actual_med_workers} 人運作，提煉了 {med_produced} 單位藥物。")
+                
+        # 拆箱區
+        actual_boxes_to_open = min(box_workers, st.session_state.supply_box)
+        if actual_boxes_to_open > 0:
+            st.session_state.supply_box -= actual_boxes_to_open
+            # 隨機抽取資源
+            get_food = 0
+            get_ammo = 0
+            get_meds = 0
+            get_gas = 0
+            get_mats = 0
+            for _ in range(actual_boxes_to_open):
+                get_food += random.randint(1, 3)
+                get_ammo += random.randint(1, 3)
+                get_meds += random.randint(0, 2)
+                get_gas += random.randint(0, 1)
+                get_mats += random.randint(1, 4)
+            
+            st.session_state.food += get_food
+            st.session_state.ammo += get_ammo
+            st.session_state.meds += get_meds
+            st.session_state.gas += get_gas
+            st.session_state.materials += get_mats
+            
+            new_logs.append(f"📦 拆箱工人開啟了 {actual_boxes_to_open} 個資源箱！獲得：食物+{get_food}、彈藥+{get_ammo}、藥物+{get_meds}、汽油+{get_gas}、材料+{get_mats}。")
+        elif box_workers > 0 and st.session_state.supply_box == 0:
+            new_logs.append("🚨 警告：據點內的資源箱已經完全枯竭！拆箱工人毫無收穫。需要尋找新據點！")
 
-    # --- 頁籤 4: 系統日誌 ---
-    with tab4:
-        for log in st.session_state.logs[:15]:
-            st.text(log)
+        # 3. 消耗階段 (生存壓力)
+        # 食物消耗
+        food_consumed = st.session_state.human * 2
+        if st.session_state.food >= food_consumed:
+            st.session_state.food -= food_consumed
+            new_logs.append(f"🍽️ 全體倖存者消耗了 {food_consumed} 單位食物。")
+        else:
+            deficit = food_consumed - st.session_state.food
+            starved_humans = math.ceil(deficit / 4) # 每缺4食物就餓死1人
+            st.session_state.food = 0
+            st.session_state.human = max(0, st.session_state.human - starved_humans)
+            new_logs.append(f"💀 食物嚴重短缺！發生飢荒，有 {starved_humans} 名倖存者不幸餓死。")
+
+        # 藥物生病消耗
+        sick_count = 0
+        for _ in range(st.session_state.human):
+            if random.random() < 0.20: # 20% 生病機率
+                sick_count += 1
+                
+        if sick_count > 0:
+            if st.session_state.meds >= sick_count:
+                st.session_state.meds -= sick_count
+                new_logs.append(f"🤢 本月有 {sick_count} 人生病，消耗了 {sick_count} 單位藥物後全員痊癒。")
+            else:
+                untreated = sick_count - st.session_state.meds
+                st.session_state.meds = 0
+                dead_by_disease = math.ceil(untreated / 2) # 沒藥醫的人有一半機率死亡
+                st.session_state.human = max(0, st.session_state.human - dead_by_disease)
+                new_logs.append(f"💔 醫療資源不足！{sick_count} 人生病但藥物不夠，導致 {dead_by_disease} 人因病去世。")
+
+        # 4. 外部隨機事件 (喪屍派系與人類派系)
+        event_roll = random.random()
+        if event_roll < 0.35:
+            # 喪屍襲擊事件
+            zombie_strength = random.randint(5, 15) + (st.session_state.month * 2)
+            new_logs.append(f"⚠️ 【危機】大量喪屍襲擊據點！(屍潮強度: {zombie_strength})")
+            
+            # 防禦計算：彈藥能抵消屍潮，留守人力也能提供防禦協助
+            ammo_defense = st.session_state.ammo
+            if ammo_defense >= zombie_strength:
+                st.session_state.ammo -= zombie_strength
+                new_logs.append(f"🛡️ 守軍火力充足！消耗 {zombie_strength} 單位彈藥成功擊退屍潮，無人傷亡。")
+            else:
+                # 彈藥不夠，需要肉搏，留守人力幫忙減傷
+                st.session_state.ammo = 0
+                breach_damage = zombie_strength - ammo_defense
+                # 留守人力每2人可以抵消1點肉搏傷害
+                absorbed = unassigned // 2
+                final_damage = max(1, breach_damage - absorbed)
+                
+                st.session_state.human = max(0, st.session_state.human - final_damage)
+                new_logs.append(f"💥 火力不足！屍潮突破防線，雖有 {unassigned} 人留守反擊，仍有 {final_damage} 名倖存者在肉搏戰中犧牲。")
+                
+        elif event_roll < 0.60:
+            # 人類派系互動
+            human_factions = ["黑市商人", "鋼鐵兄弟會", "廢土掠奪者"]
+            faction = random.choice(human_factions)
+            
+            if faction == "黑市商人":
+                # 有利的貿易事件
+                if st.session_state.gas >= 2:
+                    st.session_state.gas -= 2
+                    st.session_state.materials += 10
+                    new_logs.append("🤝【外交】「黑市商人」拜訪據點。你用 2 單位汽油向他們交換了 10 單位建築材料。")
+                else:
+                    new_logs.append("🤝【外交】「黑市商人」拜訪據點，但你沒有足夠的汽油與他們進行物資交易。")
+            elif faction == "鋼鐵兄弟會":
+                # 互助事件
+                st.session_state.ammo += 10
+                new_logs.append("🎖️【外交】友善的人類派系「鋼鐵兄弟會」路過，讚賞你們的求生精神，贈予了 10 單位彈藥。")
+            elif faction == "廢土掠奪者":
+                # 掠奪者敵對事件
+                new_logs.append("☠️【遭遇】「廢土掠奪者」前來勒索物資！")
+                if st.session_state.ammo >= 8:
+                    st.session_state.ammo -= 8
+                    new_logs.append("🔫 據點守軍開槍示警並消耗 8 單位彈藥，成功嚇退了掠奪者。")
+                else:
+                    st.session_state.food = max(0, st.session_state.food - 30)
+                    new_logs.append("😭 你們沒有足夠的彈藥反擊，據點被掠奪者強行搶走了 30 單位食物。")
+        else:
+            new_logs.append("🕊️ 本月無外部派系滋擾，據點度過了一個相對平靜的時間。")
+
+        # 遊戲結束判定
+        if st.session_state.human <= 0:
+            new_logs.append("💀💀💀 【遊戲結束】 據點所有倖存者均已死亡，人類的火種熄滅了... 💀💀💀")
+            st.session_state.game_started = False
+            
+        # 更新狀態
+        st.session_state.month += 1
+        st.session_state.logs = new_logs + st.session_state.logs
+        st.rerun()
+
+with main_col2:
+    st.markdown("### 📜 據點事件與歷史日誌")
+    
+    # 顯示遊戲結束大橫幅
+    if st.session_state.human <= 0:
+        st.error("🚨 據點全員覆沒！請點擊左側「重設遊戲狀態」重新開始。")
+        
+    # 用容器顯示日誌
+    log_container = st.container(height=500)
+    with log_container:
+        for log in st.session_state.logs:
+            if "❌" in log or "💀" in log or "⚠️" in log or "💥" in log or "☠️" in log:
+                st.markdown(f"<span style='color:#e74c3c;'>{log}</span>", unsafe_allow_html=True)
+            elif "✅" in log or "🌾" in log or "🧪" in log or "📦" in log or "🤝" in log or "🎖️" in log:
+                st.markdown(f"<span style='color:#2ecc71;'>{log}</span>", unsafe_allow_html=True)
+            else:
+                st.write(log)
