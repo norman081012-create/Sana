@@ -3,15 +3,15 @@ import math
 import random
 
 # 設定網頁標題與圖示
-st.set_page_config(page_title="喪屍末日據點經營模擬器 V5", page_icon="🧟", layout="wide")
+st.set_page_config(page_title="喪屍末日據點經營模擬器 V7", page_icon="🧟", layout="wide")
 
-# 建築物基礎資料表 (刪除幼兒園)
+# 建築物基礎資料表
 BUILDING_DATA = {
     "伐木場": {"cost": 20, "days": 2, "desc": "產生材料 (Lv*5 派駐上限，每人產 2 材料)"},
     "農場": {"cost": 20, "days": 2, "desc": "產生食物 (Lv*5 派駐上限，每人產 2 食物)"},
     "探索區": {"cost": 15, "days": 1, "desc": "消耗資源箱換取隨機物資 (Lv*3 派駐上限)"},
     "藥學廠": {"cost": 25, "days": 3, "desc": "食物轉換為藥物 (Lv*2 派駐上限)"},
-    "雷達站": {"cost": 35, "days": 3, "desc": "主動招募：派駐有機率尋獲中立人口，是唯一增加人口的手段 (Lv*2 派駐上限)"},
+    "宣傳站": {"cost": 35, "days": 3, "desc": "招募人口：若有中立人口，啟用每日耗 1 食物，有 33+3N% 機率招募 1 人 (Lv*2 派駐上限)"},
     "住宅區": {"cost": 30, "days": 3, "desc": "被動效果：每級增加 20 點人口容量上限"},
     "防禦設施": {"cost": 25, "days": 2, "desc": "被動效果：每級增加 10 點據點防禦值"}
 }
@@ -82,9 +82,9 @@ if 'game_started' not in st.session_state:
     }
     
     st.session_state.current_view_id = 0
-    st.session_state.logs = ["【系統】遊戲開始！目前全人類龜縮在【區域 0】。雷達站是唯一獲取人口的管道！"]
+    st.session_state.logs = ["【系統】遊戲開始！目前全人類龜縮在【區域 0】。建造宣傳站是唯一獲取人口的管道！"]
 
-st.title("🧟 喪屍末日據點經營模擬器 V5")
+st.title("🧟 喪屍末日據點經營模擬器 V7")
 
 if st.sidebar.button("🔄 重設遊戲狀態"):
     for key in list(st.session_state.keys()):
@@ -93,31 +93,12 @@ if st.sidebar.button("🔄 重設遊戲狀態"):
 
 st.sidebar.markdown(f"## 📅 存活時間：第 **{st.session_state.day}** 天")
 st.sidebar.markdown("---")
+st.sidebar.markdown("### 💡 生存與防禦規則")
+st.sidebar.write("- **施工與拆除**：施工占 1 人力。隨時可拆除建築並退還 100% 材料。")
+st.sidebar.write("- **資源箱機率**：每次開箱有 2:1 的機率獲得 (食物/材料) 或 (藥/彈藥/油)。")
+st.sidebar.write("- **戰鬥結算**：防線被突破時，每 1 隻喪屍會消耗 1 彈藥。若彈藥歸零，剩餘喪屍將等比擊殺人口！")
 
-owned_options = {bid: f"{bdata['name']} [人口: {bdata['human']}]" for bid, bdata in st.session_state.owned_bases.items()}
-selected_view_id = st.sidebar.selectbox("切換當前視角", list(owned_options.keys()), format_func=lambda x: owned_options[x])
-st.session_state.current_view_id = selected_view_id
-
-c_id = st.session_state.current_view_id
-base = st.session_state.owned_bases[c_id]
-
-active_slots = [s for s in base["slots"] if s["status"] == "active"]
-residential_cap = sum(s["level"] * 20 for s in active_slots if s["type"] == "住宅區")
-defense_bld_bonus = sum(s["level"] * 10 for s in active_slots if s["type"] == "防禦設施")
-radar_lv = sum(s["level"] for s in active_slots if s["type"] == "雷達站")
-max_population_cap = 20 + residential_cap
-
-# 計算正在施工占用的總人力
-builders_needed = sum(1 for s in base["slots"] if s["status"] in ["building", "upgrading"])
-actual_builders = min(base["human"], builders_needed)
-assignable_human = max(0, base["human"] - actual_builders)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 💡 生存與遷移規則")
-st.sidebar.write("- **施工占用**：每個正在建造或升級的建築，會暫時佔用 **1 名人力**。")
-st.sidebar.write("- **物資盲盒**：每個資源箱開啟後，必定隨機開出 **3 個單位** 的隨機資源。")
-st.sidebar.write("- **防禦機制**：防線被突破時會優先消耗彈藥抵擋；若無彈藥，則會損失人口。")
-
+# ----------------- 頂部看板 (全局資源) -----------------
 st.markdown("### 📦 全局物資總庫存")
 col_r1, col_r2, col_r3, col_r4, col_r5 = st.columns(5)
 col_r1.metric("🍞 總食物", st.session_state.global_food)
@@ -126,10 +107,30 @@ col_r3.metric("💥 總彈藥", st.session_state.global_ammo)
 col_r4.metric("💊 總藥物", st.session_state.global_meds)
 col_r5.metric("⛽ 總汽油", st.session_state.global_gas)
 
-st.markdown(f"### 🏕️ 當前選定據點現況：**{base['name']}**")
+st.markdown("---")
+
+# ----------------- 據點現況與切換器 -----------------
+st.markdown("### 🏕️ 據點現況與管理")
+owned_options = {bid: f"{bdata['name']} [總人口: {bdata['human']}]" for bid, bdata in st.session_state.owned_bases.items()}
+selected_view_id = st.selectbox("切換當前視角的據點 (選擇後下方資料與派駐將同步更新)", list(owned_options.keys()), format_func=lambda x: owned_options[x])
+st.session_state.current_view_id = selected_view_id
+
+c_id = st.session_state.current_view_id
+base = st.session_state.owned_bases[c_id]
+
+active_slots = [s for s in base["slots"] if s["status"] == "active"]
+residential_cap = sum(s["level"] * 20 for s in active_slots if s["type"] == "住宅區")
+defense_bld_bonus = sum(s["level"] * 10 for s in active_slots if s["type"] == "防禦設施")
+propaganda_lv = sum(s["level"] for s in active_slots if s["type"] == "宣傳站")
+max_population_cap = 20 + residential_cap
+
+builders_needed = sum(1 for s in base["slots"] if s["status"] in ["building", "upgrading"])
+actual_builders = min(base["human"], builders_needed)
+assignable_human = max(0, base["human"] - actual_builders)
+
 col_b1, col_b2, col_b3, col_b4, col_b5 = st.columns(5)
 pop_color = "normal" if base["human"] <= max_population_cap else "inverse"
-col_b1.metric("👥 據點人口 / 容量", f"{base['human']} / {max_population_cap}", delta="超載" if base["human"] > max_population_cap else "", delta_color=pop_color)
+col_b1.metric("👥 據點人力 / 容量", f"{base['human']} / {max_population_cap}", delta="超載" if base["human"] > max_population_cap else "", delta_color=pop_color)
 col_b2.metric("🧟 周圍喪屍威脅", base["zombie_threat"])
 col_b3.metric("🛡️ 總防禦加成", base["defense_bonus"] + defense_bld_bonus)
 col_b4.metric("📦 剩餘資源箱", base["boxes"])
@@ -137,6 +138,7 @@ col_b5.metric("🤝 可招募中立人口", base["neutral_pop"])
 
 st.markdown("---")
 
+# ----------------- 主要操作區 -----------------
 main_col1, main_col2 = st.columns([3, 2])
 
 with main_col1:
@@ -146,7 +148,7 @@ with main_col1:
         st.markdown(f"#### 【{base['name']}】每日派駐管理")
         
         if builders_needed > 0:
-            st.info(f"👷 當前據點有工程正在進行，已暫時指派 {actual_builders} 名人力投入施工 (無法參與生產與防禦)。")
+            st.info(f"👷 當前據點有工程進行中，已指派 {actual_builders} 名人力投入施工。")
             
         lumber_lv = sum(s["level"] for s in active_slots if s["type"] == "伐木場")
         farm_lv = sum(s["level"] for s in active_slots if s["type"] == "農場")
@@ -156,7 +158,7 @@ with main_col1:
         if base["human"] == 0:
             st.warning("⚠️ 這個據點目前沒有常駐人口！")
             btn_disabled = True
-            lumber_workers, farm_workers, med_workers, explore_workers, radar_workers = 0, 0, 0, 0, 0
+            lumber_workers, farm_workers, med_workers, explore_workers, propaganda_workers = 0, 0, 0, 0, 0
             unassigned = 0
             total_defense = base["defense_bonus"] + defense_bld_bonus
         else:
@@ -165,9 +167,9 @@ with main_col1:
             farm_workers = st.slider(f"🌾 農場 (上限 {farm_lv*5} 人)", 0, farm_lv*5, 0) if farm_lv > 0 else 0
             med_workers = st.slider(f"🧪 藥學廠 (上限 {med_lv*2} 人)", 0, med_lv*2, 0) if med_lv > 0 else 0
             explore_workers = st.slider(f"📦 探索區 (上限 {explore_lv*3} 人)", 0, explore_lv*3, 0) if explore_lv > 0 else 0
-            radar_workers = st.slider(f"📡 雷達站 (上限 {radar_lv*2} 人 | 每人 15% 機率尋獲人口)", 0, radar_lv*2, 0) if radar_lv > 0 else 0
+            propaganda_workers = st.slider(f"📢 宣傳站 (上限 {propaganda_lv*2} 人 | 耗1食物, 機率 33+3N%)", 0, propaganda_lv*2, 0) if propaganda_lv > 0 else 0
             
-            total_assigned = lumber_workers + farm_workers + med_workers + explore_workers + radar_workers
+            total_assigned = lumber_workers + farm_workers + med_workers + explore_workers + propaganda_workers
             unassigned = assignable_human - total_assigned
             total_defense = base["defense_bonus"] + defense_bld_bonus + unassigned
             
@@ -202,7 +204,7 @@ with main_col1:
                         if slot["days_left"] <= 0:
                             slot["level"] += 1
                             slot["status"] = "active"
-                            new_logs.append(f"🏗️ [{b_data['name']}] 建築完工！【{slot['type']}】升至 Lv.{slot['level']}，已釋放 1 名占用人力。")
+                            new_logs.append(f"🏗️ [{b_data['name']}] 建築完工！【{slot['type']}】升至 Lv.{slot['level']}，已釋放占用人力。")
                 
                 if b_data["human"] <= 0:
                     b_data["zombie_threat"] += random.randint(1, 3)
@@ -225,10 +227,14 @@ with main_col1:
                         if act_box > 0:
                             b_data["boxes"] -= act_box
                             f, a, m, g, mat = 0, 0, 0, 0, 0
-                            res_pool = ["f", "a", "m", "g", "mat"]
                             for _ in range(act_box):
-                                for _ in range(3): # 每箱精準抽3個
-                                    roll = random.choice(res_pool)
+                                for _ in range(3): 
+                                    # 2/3 機率開出食物或材料； 1/3 機率開出藥物、彈藥或汽油
+                                    if random.random() < (2.0 / 3.0):
+                                        roll = random.choice(["f", "mat"])
+                                    else:
+                                        roll = random.choice(["a", "m", "g"])
+                                        
                                     if roll == "f": f += 1
                                     elif roll == "a": a += 1
                                     elif roll == "m": m += 1
@@ -241,15 +247,19 @@ with main_col1:
                             st.session_state.global_gas += g
                             st.session_state.global_materials += mat
                             new_logs.append(f"📦 [{b_data['name']}] 探索區拆解 {act_box} 箱，共獲得 {act_box*3} 單位物資 (食+{f} 彈+{a} 藥+{m} 油+{g} 材+{mat})。")
-                    if radar_workers > 0:
-                        success_recruits = 0
-                        for _ in range(radar_workers):
-                            if random.random() < 0.15 and b_data["neutral_pop"] > 0:
-                                success_recruits += 1
+                    
+                    if propaganda_workers > 0 and b_data["neutral_pop"] > 0:
+                        if st.session_state.global_food >= 1:
+                            st.session_state.global_food -= 1
+                            recruit_chance = 33 + (3 * propaganda_workers)
+                            if random.randint(1, 100) <= recruit_chance:
                                 b_data["neutral_pop"] -= 1
                                 b_data["human"] += 1
-                        if success_recruits > 0:
-                            new_logs.append(f"📡 [{b_data['name']}] 雷達站成功引導 {success_recruits} 名中立人口加入！")
+                                new_logs.append(f"📢 [{b_data['name']}] 宣傳站消耗 1 食物，成功招募了 1 名中立人口！(成功率 {recruit_chance}%)")
+                            else:
+                                new_logs.append(f"📢 [{b_data['name']}] 宣傳站消耗 1 食物進行廣播，但今日無人加入。(成功率 {recruit_chance}%)")
+                        else:
+                            new_logs.append(f"⚠️ [{b_data['name']}] 宣傳站因為缺乏 1 單位食物，今日無法運作！")
                 
                 h_count = b_data["human"]
                 if st.session_state.global_food >= h_count:
@@ -295,10 +305,10 @@ with main_col1:
                             dmg = breach - st.session_state.global_ammo
                             new_logs.append(f"💥 [{b_data['name']}] 防線被破！耗盡最後的 {st.session_state.global_ammo} 彈藥後，剩餘喪屍展開屠殺...")
                             st.session_state.global_ammo = 0
-                            dead = max(1, dmg // 3)
+                            dead = dmg
                             b_data["human"] = max(0, b_data["human"] - dead)
-                            b_data["zombie_threat"] = max(0, z_power - b_defense - 5)
-                            new_logs.append(f"🩸 [{b_data['name']}] {dead} 名倖存者慘遭喪屍咬死！")
+                            b_data["zombie_threat"] = 0
+                            new_logs.append(f"🩸 [{b_data['name']}] 戰鬥結束，{dead} 名倖存者慘遭喪屍殺害！")
 
             st.session_state.day += 1
             st.session_state.logs = new_logs + st.session_state.logs
@@ -318,7 +328,7 @@ with main_col1:
                     
                     can_build = True
                     if assignable_human < 1:
-                        st.warning("⚠️ 沒有多餘的可用人力來進行施工！(請從生產線上調離人力)")
+                        st.warning("⚠️ 沒有多餘的可用人力來進行施工！")
                         can_build = False
                     
                     if st.button(f"🔨 建造 {b_type} (需 {cost} 材料, {days} 天, 占 1 人力)", key=f"bld_{c_id}_{i}", disabled=not can_build):
@@ -330,28 +340,41 @@ with main_col1:
                         else:
                             st.error("全球物資庫存的材料不足！")
                 
-                elif slot["status"] in ["building", "upgrading"]:
-                    st.info(f"🚧 【{slot['type']}】施工中... 剩餘 {slot['days_left']} 天 (占用 1 人力)")
-                
-                elif slot["status"] == "active":
-                    cost = BUILDING_DATA[slot["type"]]["cost"] * (slot["level"] + 1)
-                    days = BUILDING_DATA[slot["type"]]["days"]
-                    st.success(f"🏢 **Lv.{slot['level']} {slot['type']}**")
-                    
-                    can_upgrade = True
-                    if assignable_human < 1:
-                        st.warning("⚠️ 沒有多餘的可用人力來進行升級！")
-                        can_upgrade = False
-                        
-                    if st.button(f"⬆️ 升級至 Lv.{slot['level']+1} (需 {cost} 材料, {days} 天, 占 1 人力)", key=f"upg_{c_id}_{i}", disabled=not can_upgrade):
-                        if st.session_state.global_materials >= cost:
-                            st.session_state.global_materials -= cost
-                            slot["status"] = "upgrading"
-                            slot["days_left"] = days
-                            st.session_state.logs.insert(0, f"⬆️ 在 [{base['name']}] 消耗 {cost} 材料升級【{slot['type']}】。")
+                else:
+                    col_info, col_btn = st.columns([3, 1])
+                    with col_info:
+                        if slot["status"] in ["building", "upgrading"]:
+                            st.info(f"🚧 【{slot['type']}】施工中... 剩餘 {slot['days_left']} 天 (占用 1 人力)")
+                        elif slot["status"] == "active":
+                            st.success(f"🏢 **Lv.{slot['level']} {slot['type']}**")
+                            
+                    with col_btn:
+                        # 拆除按鈕邏輯：返還所有已投入材料
+                        total_cost_invested = int(BUILDING_DATA[slot["type"]]["cost"] * slot["level"] * (slot["level"] + 1) / 2)
+                        if slot["status"] in ["building", "upgrading"]:
+                            # 加上正在施工的這級成本
+                            total_cost_invested += BUILDING_DATA[slot["type"]]["cost"] * (slot["level"] + 1)
+                            
+                        if st.button("🧨 拆除", key=f"dem_{c_id}_{i}"):
+                            st.session_state.global_materials += total_cost_invested
+                            st.session_state.logs.insert(0, f"🧨 [{base['name']}] 拆除並回收了 {slot['type']}，退還全額材料：{total_cost_invested}。")
+                            base["slots"][i] = {"type": None, "level": 0, "status": "empty", "days_left": 0}
                             st.rerun()
-                        else:
-                            st.error("材料不足！")
+                            
+                    if slot["status"] == "active":
+                        cost = BUILDING_DATA[slot["type"]]["cost"] * (slot["level"] + 1)
+                        days = BUILDING_DATA[slot["type"]]["days"]
+                        can_upgrade = assignable_human >= 1
+                        
+                        if st.button(f"⬆️ 升級至 Lv.{slot['level']+1} (需 {cost} 材料, {days} 天, 占 1 人力)", key=f"upg_{c_id}_{i}", disabled=not can_upgrade):
+                            if st.session_state.global_materials >= cost:
+                                st.session_state.global_materials -= cost
+                                slot["status"] = "upgrading"
+                                slot["days_left"] = days
+                                st.session_state.logs.insert(0, f"⬆️ 在 [{base['name']}] 消耗 {cost} 材料升級【{slot['type']}】。")
+                                st.rerun()
+                            else:
+                                st.error("材料不足！")
             st.divider()
 
     with tab3:
@@ -369,17 +392,22 @@ with main_col1:
         st.write(f"- 預估剩餘資源箱：`{dest['boxes']} 箱` | 中立人口基數：`{dest['neutral_pop']} 人`")
         
         st.markdown("##### 📦 精確配置搬遷載重（自全局總量中提撥）")
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            move_human = st.number_input("🚚 隨行車隊人口", min_value=0, max_value=base["human"], value=min(5, base["human"]))
+            move_mats = st.number_input("🪵 搬運材料", min_value=0, max_value=st.session_state.global_materials, value=0)
+        with col_m2:
+            move_meds = st.number_input("💊 搬運藥物", min_value=0, max_value=st.session_state.global_meds, value=0)
+            move_ammo = st.number_input("💥 搬運彈藥", min_value=0, max_value=st.session_state.global_ammo, value=0)
         
-        move_human = st.number_input("🚚 隨行車隊人口數量", min_value=0, max_value=base["human"], value=min(5, base["human"]))
-        move_mats = st.number_input("🪵 搬運材料數量", min_value=0, max_value=st.session_state.global_materials, value=0)
-        
-        req_gas = math.ceil((move_human / 2) + (move_mats / 5))
+        cargo_weight = move_mats + move_meds + move_ammo
+        req_gas = math.ceil((move_human / 2) + (cargo_weight / 5))
         req_food = move_human * dest["travel_days"]
         
         st.markdown("##### ⛽ 搬遷物資消耗預估")
         col_c1, col_c2 = st.columns(2)
-        col_c1.metric("⛽ 消耗汽油 (公式: 人/2 + 材/5)", req_gas, f"總庫存: {st.session_state.global_gas}")
-        col_c2.metric("🍞 消耗食物 (公式: 人 * 天數)", req_food, f"總庫存: {st.session_state.global_food}")
+        col_c1.metric("⛽ 消耗汽油 (人/2 + 物資總額/5)", req_gas, f"總庫存: {st.session_state.global_gas}")
+        col_c2.metric("🍞 消耗食物 (人 * 天數)", req_food, f"總庫存: {st.session_state.global_food}")
         
         can_migrate = True
         if move_human <= 0:
@@ -431,7 +459,7 @@ with main_col2:
         for log in st.session_state.logs:
             if "❌" in log or "💀" in log or "⚠️" in log or "💥" in log or "🚨" in log or "💔" in log or "🩸" in log:
                 st.markdown(f"<span style='color:#e74c3c;'>{log}</span>", unsafe_allow_html=True)
-            elif "✅" in log or "🌾" in log or "🧪" in log or "📦" in log or "🤝" in log or "🚚" in log or "🏗️" in log or "📡" in log or "🔫" in log:
+            elif "✅" in log or "🌾" in log or "🧪" in log or "📦" in log or "🤝" in log or "🚚" in log or "🏗️" in log or "📢" in log or "🔫" in log or "🧨" in log:
                 st.markdown(f"<span style='color:#2ecc71;'>{log}</span>", unsafe_allow_html=True)
             else:
                 st.write(log)
